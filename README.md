@@ -44,7 +44,7 @@ python3 rollout/probe.py --base http://127.0.0.1:19421 --model ninfer-rollout --
 
 ## 预编译二进制
 
-[v0.1.0-sm120a-390b4d1](https://github.com/MerkyorLynn/ninfer-rollout/releases/tag/v0.1.0-sm120a-390b4d1) 提供 `sm_120a`、CUDA 13 的 `ninfer-serve` 预编译包，对应提交 `390b4d1`。可在 RTX PRO 6000 上直接解压使用，无需现场编译。Spark 需要自行按 `121a` 编译。
+[v0.1.0-sm120a-390b4d1](https://github.com/MerkyorLynn/ninfer-rollout/releases/tag/v0.1.0-sm120a-390b4d1) 提供 `sm_120a`、CUDA 13 的 `ninfer-serve` 预编译包，对应提交 `390b4d1`。可在 RTX PRO 6000 / 6000D 上直接解压使用，无需现场编译。Spark 需要自行按 `121a` 编译。
 
 运行前需安装 NVIDIA 驱动、CUDA 13 运行时 `libcudart.so.13`、FFmpeg 6 相关动态库，以及 `libcurl`。解压后在目标机上执行 `ldd ninfer-serve`，确认没有缺失的库。
 
@@ -59,4 +59,4 @@ python3 rollout/probe.py --base http://127.0.0.1:19421 --model ninfer-rollout --
 
 ## 结果
 
-对照评测结果稍后补充。
+对照评测在 RTX PRO 6000D 上测试，结果稍后补充。标准版 RTX PRO 6000 预计会快约 20%。
