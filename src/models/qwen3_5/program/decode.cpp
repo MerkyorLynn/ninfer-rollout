@@ -6,6 +6,7 @@
 #include "core/nvtx.h"
 #include "core/device.h"
 #include "ninfer/ops/prepare_ragged_prefix.h"
+#include "ninfer/ops/sampled_logprobs.h"
 #include "ninfer/ops/sampling.h"
 #include "ninfer/ops/scatter.h"
 
@@ -118,9 +119,58 @@ void ProgramImpl::copy_tail(SequenceState& sequence, const Tensor& source) {
     sequence.tail_hidden_valid = true;
 }
 
+namespace {
+
+// Labels one speculative row: accepted drafts, then a rejection-resampled correction (some draft
+// was rejected) or a bonus token (every draft was accepted). extent==0 is a plain sample.
+void label_speculative_kinds(std::uint8_t* kinds, std::int32_t accepted, std::int32_t count,
+                             std::uint32_t extent) {
+    for (std::int32_t i = 0; i < count; ++i) {
+        runtime::SampledTokenKind kind = runtime::SampledTokenKind::AcceptedDraft;
+        if (i == count - 1) {
+            kind = extent == 0 ? runtime::SampledTokenKind::Sampled
+                   : static_cast<std::uint32_t>(accepted) < extent
+                       ? runtime::SampledTokenKind::Correction
+                       : runtime::SampledTokenKind::Bonus;
+        }
+        kinds[i] = static_cast<std::uint8_t>(kind);
+    }
+}
+
+} // namespace
+
 void ProgramImpl::copy_round_token() {
     CUDA_CHECK(cudaMemcpyAsync(host_tokens, io.token.data, sizeof(TokenId), cudaMemcpyDeviceToHost,
                                device.stream));
+}
+
+void ProgramImpl::enqueue_single_column_logprobs(const Tensor& logits, const Tensor& tokens,
+                                                 const ops::SamplingConfig* configs,
+                                                 std::int32_t batch) {
+    if (!sample_logprobs_device || !sample_logprobs_host || configs == nullptr || batch <= 0 ||
+        batch > static_cast<std::int32_t>(kMaximumConcurrency)) {
+        return;
+    }
+    auto* base = static_cast<float*>(sample_logprobs_device->p);
+    Tensor sampling(base, DType::FP32, {batch});
+    Tensor raw(base + kMaximumConcurrency, DType::FP32, {batch});
+    Tensor logits_view = logits.view({logits.ne[0], batch});
+    Tensor tokens_view = tokens.view({batch});
+    ops::sampled_token_logprobs(logits_view, tokens_view, nullptr, configs, nullptr, 1,
+                                dimension(parameters.model.resources().public_token_count),
+                                sampling, raw, device.stream);
+    CUDA_CHECK(cudaMemcpyAsync(sample_logprobs_host->data(), sample_logprobs_device->p,
+                               2U * kMaximumConcurrency * sizeof(float), cudaMemcpyDeviceToHost,
+                               device.stream));
+}
+
+std::span<const float> ProgramImpl::host_sampling_logprobs(std::size_t count) const {
+    return std::span<const float>(static_cast<const float*>(sample_logprobs_host->data()), count);
+}
+
+std::span<const float> ProgramImpl::host_raw_logprobs(std::size_t count) const {
+    return std::span<const float>(
+        static_cast<const float*>(sample_logprobs_host->data()) + kMaximumConcurrency, count);
 }
 
 void ProgramImpl::mark_workspace_usage(std::size_t phase_bytes) noexcept {
@@ -297,6 +347,10 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_ordinary_batch(
         mark_workspace_usage(workspace_plan.ordinary_round);
         execution::ordinary_decode_batch(schedule_state, static_cast<std::int32_t>(lanes.size()),
                                          envelope, executable);
+        enqueue_single_column_logprobs(
+            io.ordinary->logits.slice(1, 0, static_cast<std::int32_t>(lanes.size())),
+            io.ordinary->sampled_tokens.slice(0, 0, static_cast<std::int32_t>(lanes.size())),
+            io.ordinary->sampling, static_cast<std::int32_t>(lanes.size()));
         submit_range.reset();
         timing.begin_wait();
         {
@@ -329,10 +383,15 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_ordinary_batch(
             request.lifecycle = Lifecycle::Pending;
             request.timings.decode_seconds += seconds;
         }
+        std::fill_n(host_token_kinds.begin(), lanes.size(),
+                    static_cast<std::uint8_t>(runtime::SampledTokenKind::Sampled));
         return runtime::BatchedGeneratedRound{
             .tokens =
                 std::span<const TokenId>(ordinary_host_egress->sampled_tokens.data(), lanes.size()),
-            .timing = timing.finish(),
+            .timing            = timing.finish(),
+            .sampling_logprobs = host_sampling_logprobs(lanes.size()),
+            .raw_logprobs      = host_raw_logprobs(lanes.size()),
+            .token_kinds = std::span<const std::uint8_t>(host_token_kinds.data(), lanes.size()),
         };
     } catch (...) {
         timing.begin_wait();
@@ -497,6 +556,9 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_mtp_batch(
                                                           row * width,
                                                       static_cast<std::size_t>(count_i));
             validate_licensed_tokens(row_tokens);
+            label_speculative_kinds(host_token_kinds.data() + row * width, accepted_i, count_i,
+                                    static_cast<std::uint32_t>(
+                                        mtp_host_ingress->current_extents[row]));
             const std::uint32_t pcur =
                 static_cast<std::uint32_t>(mtp_host_ingress->current_extents[row]);
             if (pcur == 0) {
@@ -527,6 +589,12 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_mtp_batch(
                                                         lanes.size()),
             .row_stride = width,
             .timing     = timing.finish(),
+            .sampling_logprobs = std::span<const float>(
+                mtp_host_egress->sampling_logprobs.data(), lanes.size() * width),
+            .raw_logprobs =
+                std::span<const float>(mtp_host_egress->raw_logprobs.data(), lanes.size() * width),
+            .token_kinds = std::span<const std::uint8_t>(host_token_kinds.data(),
+                                                         lanes.size() * width),
         };
     } catch (...) {
         timing.begin_wait();
@@ -718,6 +786,8 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_dflash_batch(
                                                           row * width,
                                                       static_cast<std::size_t>(count_i));
             validate_licensed_tokens(row_tokens);
+            label_speculative_kinds(host_token_kinds.data() + row * width, accepted_i, count_i,
+                                    extent);
             if (extent == 0) {
                 request.speculative_stats.fallback_steps += 1;
             } else {
@@ -747,6 +817,12 @@ runtime::BatchedGeneratedRound ProgramImpl::decode_dflash_batch(
                                                         lanes.size()),
             .row_stride = width,
             .timing     = timing.finish(),
+            .sampling_logprobs = std::span<const float>(
+                dflash_host_egress->sampling_logprobs.data(), lanes.size() * width),
+            .raw_logprobs = std::span<const float>(dflash_host_egress->raw_logprobs.data(),
+                                                   lanes.size() * width),
+            .token_kinds = std::span<const std::uint8_t>(host_token_kinds.data(),
+                                                         lanes.size() * width),
         };
     } catch (...) {
         timing.begin_wait();

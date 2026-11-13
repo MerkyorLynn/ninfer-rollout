@@ -11,6 +11,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -181,6 +182,16 @@ struct RequestRecord {
     std::optional<BeginSummary> admitted_begin;
     std::optional<BeginSummary> begin;
     std::vector<TokenId> generated;
+    // Rollout logprobs aligned 1:1 with generated (NaN when not recorded; kinds: SampledTokenKind).
+    std::vector<float> generated_sampling_logprobs;
+    std::vector<float> generated_raw_logprobs;
+    std::vector<std::uint8_t> generated_token_kinds;
+    void resize_generated(std::size_t size) {
+        generated.resize(size);
+        generated_sampling_logprobs.resize(size, std::numeric_limits<float>::quiet_NaN());
+        generated_raw_logprobs.resize(size, std::numeric_limits<float>::quiet_NaN());
+        generated_token_kinds.resize(size, 4);
+    }
     std::string content;
     std::string reasoning;
     std::optional<LaneId> lane;

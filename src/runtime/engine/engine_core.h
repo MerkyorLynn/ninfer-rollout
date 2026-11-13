@@ -766,6 +766,13 @@ private:
         result.scheduling.device_to_host_bytes = request->device_to_host_bytes;
         result.scheduling.host_to_device_bytes = request->host_to_device_bytes;
         result.prompt                          = request->prompt_summary;
+        if (request->generated_sampling_logprobs.size() == request->generated.size() &&
+            request->generated_raw_logprobs.size() == request->generated.size() &&
+            request->generated_token_kinds.size() == request->generated.size()) {
+            result.generated_sampling_logprobs = std::move(request->generated_sampling_logprobs);
+            result.generated_raw_logprobs      = std::move(request->generated_raw_logprobs);
+            result.generated_token_kinds       = std::move(request->generated_token_kinds);
+        }
         result.generated_token_ids             = std::move(request->generated);
         result.content                         = std::move(request->content);
         result.reasoning                       = std::move(request->reasoning);
@@ -957,6 +964,36 @@ private:
         return have_pending;
     }
 
+    template <typename Request, typename Pending>
+    static void append_generated_logprobs(Request& request, const Pending& pending,
+                                          std::size_t row, std::uint32_t accepted) {
+        const std::size_t first = row * pending.row_stride();
+        bool recorded           = false;
+        if constexpr (requires {
+                          pending.sampling_logprobs();
+                          pending.raw_logprobs();
+                          pending.token_kinds();
+                      }) {
+            const auto sampling = pending.sampling_logprobs();
+            const auto raw      = pending.raw_logprobs();
+            const auto kinds    = pending.token_kinds();
+            if (sampling.size() >= first + accepted && raw.size() >= first + accepted &&
+                kinds.size() >= first + accepted) {
+                request.generated_sampling_logprobs.insert(
+                    request.generated_sampling_logprobs.end(), sampling.begin() + first,
+                    sampling.begin() + first + accepted);
+                request.generated_raw_logprobs.insert(request.generated_raw_logprobs.end(),
+                                                      raw.begin() + first,
+                                                      raw.begin() + first + accepted);
+                request.generated_token_kinds.insert(request.generated_token_kinds.end(),
+                                                     kinds.begin() + first,
+                                                     kinds.begin() + first + accepted);
+                recorded = true;
+            }
+        }
+        if (!recorded) { request.resize_generated(request.generated.size()); }
+    }
+
     void commit_pending(PendingBatch&& pending, std::span<const std::uint32_t> lane_indices,
                         bool decode_round,
                         const std::array<bool, kMaximumConcurrency>& cancelled_at_unit_start) {
@@ -986,7 +1023,7 @@ private:
                 if (request != nullptr) { request->output.discard_preview(); }
                 if (generated_staged && request != nullptr &&
                     request->generated.size() >= generated_sizes[row]) {
-                    request->generated.resize(generated_sizes[row]);
+                    request->resize_generated(generated_sizes[row]);
                 }
             }
             generated_staged = false;
@@ -1057,6 +1094,7 @@ private:
                                    static_cast<std::ptrdiff_t>(row * pending.row_stride());
                 request->generated.insert(request->generated.end(), first,
                                           first + static_cast<std::ptrdiff_t>(accepted));
+                append_generated_logprobs(*request, pending, row, accepted);
             }
         } catch (...) {
             const std::exception_ptr error = std::current_exception();
@@ -1358,6 +1396,9 @@ private:
             request->budget.emplace(summary.effective_output_tokens,
                                     summary.effective_limit_reason);
             request->generated.reserve(summary.effective_output_tokens);
+            request->generated_sampling_logprobs.reserve(summary.effective_output_tokens);
+            request->generated_raw_logprobs.reserve(summary.effective_output_tokens);
+            request->generated_token_kinds.reserve(summary.effective_output_tokens);
         }
     }
 
@@ -2065,7 +2106,7 @@ private:
                 const auto& request = slots_[membership.lanes[row]];
                 if (request != nullptr) { request->output.discard_preview(); }
                 if (request != nullptr && request->generated.size() >= generated_sizes[row]) {
-                    request->generated.resize(generated_sizes[row]);
+                    request->resize_generated(generated_sizes[row]);
                 }
             }
             generated_staged = false;
@@ -2107,6 +2148,7 @@ private:
                         "admission did not reserve thinking-control token capacity");
                 }
                 request->generated.insert(request->generated.end(), tokens.begin(), tokens.end());
+                request->resize_generated(request->generated.size()); // forced: no logprob
             }
             phase.pause_range();
             ProgramCallScope program_call(*this);

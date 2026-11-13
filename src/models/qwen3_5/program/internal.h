@@ -50,6 +50,13 @@ struct ContractAccess {
         return out;
     }
 
+    static void set_logprobs(PendingBatch& pending, std::span<const float> sampling,
+                             std::span<const float> raw, std::span<const std::uint8_t> kinds) {
+        pending.sampling_logprobs_ = sampling;
+        pending.raw_logprobs_      = raw;
+        pending.token_kinds_       = kinds;
+    }
+
     [[nodiscard]] static const void* owner(const PendingBatch& pending) noexcept {
         return pending.owner_;
     }
@@ -71,6 +78,9 @@ struct ContractAccess {
         pending.row_counts_  = {};
         pending.row_stride_  = 0;
         pending.timing_      = {};
+        pending.sampling_logprobs_ = {};
+        pending.raw_logprobs_      = {};
+        pending.token_kinds_       = {};
     }
 };
 

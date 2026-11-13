@@ -118,6 +118,8 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
         Tensor ar_rope_positions  = frame.ar_rope_positions.slice(0, 0, batch_size);
         Tensor ar_valid_columns   = frame.ar_valid_columns.slice(0, 0, batch_size);
         Tensor next_drafts        = frame.next_drafts.slice(0, 0, batch_size);
+        Tensor sampling_logprobs  = frame.sampling_logprobs.slice(1, 0, batch_size);
+        Tensor raw_logprobs       = frame.raw_logprobs.slice(1, 0, batch_size);
 
         TargetVerifyFrameView verify{
             .ids                     = verify_ids,
@@ -138,6 +140,8 @@ auto mtp_decode_batch_body(MtpBatchContext& state, std::int32_t batch_size, std:
             .licensed_counts         = licensed_counts,
             .accepted_drafts         = accepted,
             .selected_hidden         = selected_hidden,
+            .sampling_logprobs       = sampling_logprobs,
+            .raw_logprobs            = raw_logprobs,
             .replay_records          = state.execution.replay_records,
             .sampling                = frame.sampling,
         };

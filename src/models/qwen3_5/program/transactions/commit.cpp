@@ -41,6 +41,14 @@ PendingBatch ProgramImpl::wrap_pending(std::span<const std::uint32_t> lanes,
     auto pending         = ContractAccess::make_pending(
         this, transaction.id, std::span<const SequenceHandle>(handles.data(), lanes.size()),
         round.tokens, round.row_counts, round.row_stride, round.timing);
+    const std::size_t logical = round.row_counts.empty()
+                                    ? round.tokens.size()
+                                    : static_cast<std::size_t>(round.row_stride) * lanes.size();
+    if (round.sampling_logprobs.size() >= logical && round.raw_logprobs.size() >= logical &&
+        round.token_kinds.size() >= logical) {
+        ContractAccess::set_logprobs(pending, round.sampling_logprobs, round.raw_logprobs,
+                                     round.token_kinds);
+    }
     for (std::size_t row = 0; row < lanes.size(); ++row) {
         const auto count = round.row_counts.empty() ? 1 : round.row_counts[row];
         ContractAccess::constraint_failed(pending, row,
@@ -58,9 +66,12 @@ PrefillProgress ProgramImpl::wrap_prefill(std::uint32_t lane, runtime::PrefillSt
     if (step.complete) {
         const std::array<std::uint32_t, 1> lanes{lane};
         const runtime::BatchedGeneratedRound round{
-            .tokens     = step.round.tokens,
-            .row_counts = {},
-            .row_stride = 1,
+            .tokens            = step.round.tokens,
+            .row_counts        = {},
+            .row_stride        = 1,
+            .sampling_logprobs = step.round.sampling_logprobs,
+            .raw_logprobs      = step.round.raw_logprobs,
+            .token_kinds       = step.round.token_kinds,
         };
         out.pending.emplace(wrap_pending(lanes, round));
     } else if (requests[lane].prefill && requests[lane].capture_pending) {

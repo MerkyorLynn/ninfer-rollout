@@ -116,11 +116,8 @@ void validate_standard_output_controls(const Json& body) {
         if (!body.at("logprobs").is_boolean()) {
             bad_request("logprobs must be a boolean", "logprobs");
         }
-        if (body.at("logprobs").get<bool>()) {
-            bad_request("logprobs=true requires per-token log probabilities in the response, which "
-                        "NInfer does not provide",
-                        "logprobs", "logprobs_not_supported");
-        }
+        // logprobs=true returns the sampling-time logprob of every generated token
+        // (choices[0].logprobs.content); alternatives (top_logprobs > 0) remain unsupported.
     }
     if (const std::optional<int> top_logprobs = optional_int(body, "top_logprobs")) {
         if (*top_logprobs != 0) {
@@ -805,6 +802,7 @@ void parse_response_observations(const Json& body, OpenAIChatRequest& output) {
     output.timings_per_token           = get_bool(body, "timings_per_token", false);
     output.return_progress             = get_bool(body, "return_progress", false);
     output.generation.return_token_ids = get_bool(body, "return_token_ids", false);
+    output.generation.return_logprobs  = get_bool(body, "logprobs", false);
 }
 
 void parse_output_limit(const Json& body, const RequestLimits& limits, OpenAIChatRequest& output) {

@@ -72,6 +72,9 @@ struct MtpDecodeEgress {
     // Step-major: all B rows for proposal step 0, followed by all B rows for step 1, etc.
     std::array<TokenId, kMaximumConcurrency * kMtpDecodeMaximumDrafts> next_drafts{};
     std::array<std::int32_t, kMaximumConcurrency> next_extents{};
+    // Sampling-time log-probabilities aligned with licensed_tokens (see sampled_logprobs.h).
+    std::array<float, kMaximumConcurrency * kMtpDecodeMaximumWidth> sampling_logprobs{};
+    std::array<float, kMaximumConcurrency * kMtpDecodeMaximumWidth> raw_logprobs{};
 };
 
 // Prefill binds the current chunk independently of the compact decode batch.
@@ -106,6 +109,9 @@ struct DFlashDecodeEgress {
     std::array<TokenId, kMaximumConcurrency * kDFlashDecodeMaximumWidth> licensed_tokens{};
     std::array<std::int32_t, kMaximumConcurrency> licensed_counts{};
     std::array<std::int32_t, kMaximumConcurrency> accepted_drafts{};
+    // Sampling-time log-probabilities aligned with licensed_tokens (see sampled_logprobs.h).
+    std::array<float, kMaximumConcurrency * kDFlashDecodeMaximumWidth> sampling_logprobs{};
+    std::array<float, kMaximumConcurrency * kDFlashDecodeMaximumWidth> raw_logprobs{};
 };
 
 struct OrdinaryDecodeStateLayout {
@@ -252,6 +258,8 @@ struct MtpDecodeState {
     Tensor accepted_drafts;
     Tensor next_drafts;
     Tensor next_extents;
+    Tensor sampling_logprobs;
+    Tensor raw_logprobs;
     Tensor verify_ids;
     Tensor target_positions;
     Tensor target_argmax;
@@ -291,6 +299,8 @@ struct DFlashDecodeState {
     Tensor licensed_tokens;
     Tensor licensed_counts;
     Tensor accepted_drafts;
+    Tensor sampling_logprobs;
+    Tensor raw_logprobs;
     Tensor proposal_ids;
     Tensor proposal_positions;
     Tensor verify_positions;

@@ -178,6 +178,9 @@ namespace ninfer::models::qwen3_5::detail {
 
 namespace {
 
+constexpr std::uint8_t kBeginTokenKind =
+    static_cast<std::uint8_t>(runtime::SampledTokenKind::Sampled);
+
 std::array<std::int32_t, 3> prompt_rope_position(const PreparedPromptData& prompt,
                                                  std::uint32_t token);
 
@@ -707,6 +710,11 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
         }
 
         copy_round_token();
+        enqueue_single_column_logprobs(
+            io.logits.slice(1, 0, 1), io.token,
+            static_cast<const ops::SamplingConfig*>(
+                sampling_config.slice(1, static_cast<std::int32_t>(sequence.lane), 1).data),
+            1);
         std::array<TokenId, qwen3_5::kMtpDecodeMaximumDrafts> initial_drafts{};
         if (staged.prepare_mtp && staged.initial_mtp_extent != 0) {
             CUDA_CHECK(cudaMemcpyAsync(initial_drafts.data(), io.mtp->draft_tokens.data,
@@ -758,7 +766,11 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
         request.lifecycle = Lifecycle::Pending;
         return runtime::PrefillStepResult{
             .summary = summary,
-            .round   = runtime::GeneratedRound{.tokens = std::span<const TokenId>(host_tokens, 1)},
+            .round   = runtime::GeneratedRound{
+                  .tokens            = std::span<const TokenId>(host_tokens, 1),
+                  .sampling_logprobs = host_sampling_logprobs(1),
+                  .raw_logprobs      = host_raw_logprobs(1),
+                  .token_kinds       = std::span<const std::uint8_t>(&kBeginTokenKind, 1)},
             .processed_prompt_tokens = processed_prompt_tokens,
             .complete                = true,
             .timing                  = timing.finish(),

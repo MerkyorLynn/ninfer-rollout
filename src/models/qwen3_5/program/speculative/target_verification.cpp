@@ -1,5 +1,6 @@
 #include "models/qwen3_5/program/internal.h"
 #include "models/qwen3_5/program/execution_context.h"
+#include "ninfer/ops/sampled_logprobs.h"
 #include "ninfer/ops/scatter.h"
 #include "ninfer/ops/speculative_round.h"
 
@@ -40,6 +41,15 @@ void target_accept(ExecutionCore& execution, Tensor& continuation_hidden_store,
             frame.accepted_drafts,
             dimension(execution.parameters.model.resources().public_token_count), frame.sampling,
             execution.work, execution.device.stream);
+    }
+    if (frame.sampling_logprobs.data != nullptr && frame.raw_logprobs.data != nullptr) {
+        // Rollout logprobs of every licensed token (accepted drafts, correction or bonus) under
+        // the target distribution of its verify column. Same stream, before the egress copy.
+        ops::sampled_token_logprobs(
+            frame.target_logits, frame.licensed_tokens, &frame.licensed_counts, frame.sampling,
+            &frame.drafts, frame.licensed_tokens.ne[0],
+            dimension(execution.parameters.model.resources().public_token_count),
+            frame.sampling_logprobs, frame.raw_logprobs, execution.device.stream);
     }
     ops::speculative_select_accepted_hidden(frame.target_hidden, frame.accepted_drafts,
                                             frame.selected_hidden, execution.device.stream);

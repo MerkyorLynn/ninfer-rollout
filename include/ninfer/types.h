@@ -889,6 +889,14 @@ struct GenerationResult {
     std::uint64_t engine_request_id = 0;
     PromptSummary prompt;
     std::vector<TokenId> generated_token_ids;
+    // Rollout: sampling-time logprobs aligned 1:1 with generated_token_ids (empty if unavailable).
+    // sampling = log p under the exact truncated distribution sampled from (temperature, top-k,
+    // top-p, min-p, penalties); raw = full-vocabulary log_softmax of the target logits at T=1.
+    // NaN marks a token that was not sampled (forced output control). Kinds follow
+    // runtime::SampledTokenKind: 0 sampled, 1 accepted draft, 2 correction, 3 bonus, 4 forced.
+    std::vector<float> generated_sampling_logprobs;
+    std::vector<float> generated_raw_logprobs;
+    std::vector<std::uint8_t> generated_token_kinds;
     std::string content;
     std::string reasoning;
     std::vector<GeneratedToolCall> tool_calls;

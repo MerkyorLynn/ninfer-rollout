@@ -186,6 +186,8 @@ struct GenerationRequest {
     bool allow_engine_automatic_shared_prefixes = true;
     // Rollout: echo exact prompt and committed completion ids (requires --rollout-score).
     bool return_token_ids = false;
+    // OpenAI logprobs=true: per-token sampling-time logprobs (non-streaming only).
+    bool return_logprobs = false;
     SamplingParams sampling;
 
     [[nodiscard]] bool uses_tools() const noexcept {

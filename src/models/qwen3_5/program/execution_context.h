@@ -128,6 +128,9 @@ struct TargetVerifyFrameView {
     Tensor licensed_counts;
     Tensor accepted_drafts;
     Tensor selected_hidden;
+    // Optional FP32 [width,B] outputs: sampling-time logprobs of licensed_tokens.
+    Tensor sampling_logprobs;
+    Tensor raw_logprobs;
     const GdnReplayRecords* replay_records = nullptr;
     const ops::SamplingConfig* sampling    = nullptr;
     DFlashFeatureSink* feature_sink        = nullptr;

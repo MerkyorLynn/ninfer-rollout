@@ -190,6 +190,8 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
     host_tokens = round_host
                       ? &static_cast<qwen3_5::PrefillRoundHost*>(round_host->data())->sampled_token
                       : nullptr;
+    sample_logprobs_device.emplace(2U * kMaximumConcurrency * sizeof(float));
+    sample_logprobs_host.emplace(2U * kMaximumConcurrency * sizeof(float));
     if (ordinary_host) {
         ordinary_host_ingress = static_cast<qwen3_5::OrdinaryDecodeIngress*>(ordinary_host->data());
         ordinary_host_egress  = reinterpret_cast<qwen3_5::OrdinaryDecodeEgress*>(

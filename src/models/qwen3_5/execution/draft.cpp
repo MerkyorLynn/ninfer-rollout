@@ -603,6 +603,8 @@ auto dflash_decode_batch_body(DFlashBatchContext& state, std::int32_t batch_size
         Tensor licensed_tokens    = frame.licensed_tokens.slice(1, 0, batch_size);
         Tensor licensed_counts    = frame.licensed_counts.slice(0, 0, batch_size);
         Tensor accepted           = frame.accepted_drafts.slice(0, 0, batch_size);
+        Tensor sampling_logprobs  = frame.sampling_logprobs.slice(1, 0, batch_size);
+        Tensor raw_logprobs       = frame.raw_logprobs.slice(1, 0, batch_size);
 
         if (phase == SpeculativePhase::Forward) {
             state.execution.work.reset();
@@ -666,8 +668,10 @@ auto dflash_decode_batch_body(DFlashBatchContext& state, std::int32_t batch_size
                 .licensed_tokens = licensed_tokens,
                 .licensed_counts = licensed_counts,
                 .accepted_drafts = accepted,
-                .selected_hidden = selected_hidden,
-                .replay_records  = state.execution.replay_records,
+                .selected_hidden   = selected_hidden,
+                .sampling_logprobs = sampling_logprobs,
+                .raw_logprobs      = raw_logprobs,
+                .replay_records    = state.execution.replay_records,
                 .sampling        = frame.sampling,
                 .feature_sink    = &sink,
             };

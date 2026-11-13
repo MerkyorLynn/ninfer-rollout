@@ -3,6 +3,7 @@
 #include "runtime/contract/request.h"
 #include "runtime/contract/timing.h"
 #include <compare>
+#include <cstdint>
 #include <span>
 
 namespace ninfer::runtime {
@@ -63,8 +64,21 @@ struct BeginSummary {
     [[nodiscard]] friend constexpr bool operator==(BeginSummary, BeginSummary) noexcept = default;
 };
 
+// How a generated token was produced (rollout logprob provenance).
+enum class SampledTokenKind : std::uint8_t {
+    Sampled       = 0, // ordinary sample (Begin, ordinary decode, speculative round with no draft)
+    AcceptedDraft = 1, // draft token accepted by speculative rejection sampling
+    Correction    = 2, // resampled from the residual after a draft rejection
+    Bonus         = 3, // sampled from the last verify column after every draft was accepted
+    Forced        = 4, // appended by output control (not sampled; no logprob)
+};
+
+// Optional sampling-time logprob spans share the token layout. Empty spans mean "not recorded".
 struct GeneratedRound {
     std::span<const TokenId> tokens;
+    std::span<const float> sampling_logprobs;
+    std::span<const float> raw_logprobs;
+    std::span<const std::uint8_t> token_kinds;
 };
 
 struct BatchedGeneratedRound {
@@ -72,6 +86,9 @@ struct BatchedGeneratedRound {
     std::span<const std::int32_t> row_counts;
     std::uint32_t row_stride = 1;
     ExecutionTiming timing;
+    std::span<const float> sampling_logprobs;
+    std::span<const float> raw_logprobs;
+    std::span<const std::uint8_t> token_kinds;
 };
 
 struct PrefillStepResult {

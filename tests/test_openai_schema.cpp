@@ -9,6 +9,7 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <cmath>
 #include <string>
 #include <utility>
 #include <vector>
@@ -144,7 +145,6 @@ int test_standard_field_policy() {
 
     rejected("n", 2, "n_not_supported");
     rejected("logit_bias", Json{{"12", 1}}, "logit_bias_not_supported");
-    rejected("logprobs", true, "logprobs_not_supported");
     rejected("top_logprobs", 2, "logprobs_not_supported");
     rejected("modalities", Json::array({"text", "audio"}), "modality_not_supported");
     rejected("web_search_options", Json::object(), "web_search_not_supported");
@@ -856,6 +856,42 @@ int test_return_token_ids() {
     return failures;
 }
 
+int test_sampling_logprobs() {
+    int failures = 0;
+    failures += check(!parse(base_request()).generation.return_logprobs,
+                      "logprobs defaults to false");
+    Json body        = base_request();
+    body["logprobs"] = true;
+    failures += check(parse(body).generation.return_logprobs, "logprobs=true parses");
+
+    GenerationOutcome outcome   = sample_outcome();
+    outcome.generated_token_ids = {11, 12, 248046};
+    Json response = Json::parse(make_chat_completion_response(identity(), outcome));
+    failures += check(response["choices"][0]["logprobs"].is_null(),
+                      "logprobs stay null unless requested");
+    outcome.return_logprobs   = true;
+    outcome.raw_logprobs      = {-0.5f, -1.25f, std::nanf("")};
+    outcome.sampling_logprobs = {-0.25f, 0.0f, std::nanf("")};
+    outcome.token_kinds       = {1, 3, 4};
+    response = Json::parse(make_chat_completion_response(identity(), outcome));
+    const Json& content = response["choices"][0]["logprobs"]["content"];
+    failures += check(content.is_array() && content.size() == 3, "one logprob entry per token");
+    failures += check(content[0]["token_id"] == 11 && content[0]["logprob"] == -0.5 &&
+                          content[0]["sampling_logprob"] == -0.25 &&
+                          content[0]["kind"] == "accepted_draft" &&
+                          content[0]["token"] == "token_id:11",
+                      "entry carries raw and sampling logprob, kind and id");
+    failures += check(content[1]["kind"] == "bonus" && content[2]["kind"] == "forced" &&
+                          content[2]["logprob"].is_null() && content[2]["sampling_logprob"].is_null(),
+                      "forced tokens carry null logprobs");
+    outcome.token_kinds = {1, 3};
+    response = Json::parse(make_chat_completion_response(identity(), outcome));
+    failures += check(response["choices"][0]["logprobs"]["recorded"] == false &&
+                          response["choices"][0]["logprobs"]["content"][0]["logprob"].is_null(),
+                      "misaligned logprobs are reported as not recorded");
+    return failures;
+}
+
 int test_stream_response() {
     int failures = 0;
     OpenAIChatStream stream(identity(), true);
@@ -1008,6 +1044,7 @@ int main() {
     failures += test_stops_and_ranges();
     failures += test_aggregate_response();
     failures += test_return_token_ids();
+    failures += test_sampling_logprobs();
     failures += test_stream_response();
     failures += test_stream_observations();
     failures += test_common_objects();

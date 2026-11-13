@@ -198,6 +198,43 @@ Json stream_choice(Json delta, Json finish_reason = nullptr) {
 
 std::string event(Json payload) { return "data: " + payload.dump() + "\n\n"; }
 
+Json finite_or_null(float value) {
+    return std::isfinite(value) ? Json(static_cast<double>(value)) : Json(nullptr);
+}
+
+// OpenAI-shaped logprobs for rollout collection. One entry per generated token id, in order
+// (reasoning, content, stop token, forced control tokens). "logprob" is the raw target
+// log_softmax at temperature 1 over the full vocabulary (what RL trainers recompute);
+// "sampling_logprob" is log p under the truncated distribution actually sampled from
+// (temperature, top-k, top-p, min-p). Both come from the target logits of the round that emitted
+// the token. Non-sampled (forced) tokens carry null. "token" is "token_id:<id>".
+Json sampled_logprobs_json(const GenerationOutcome& outcome) {
+    if (!outcome.return_logprobs) { return nullptr; }
+    const auto& ids = outcome.generated_token_ids;
+    const bool aligned = outcome.sampling_logprobs.size() == ids.size() &&
+                         outcome.raw_logprobs.size() == ids.size() &&
+                         outcome.token_kinds.size() == ids.size();
+    static constexpr const char* kKinds[] = {"sampled", "accepted_draft", "correction", "bonus",
+                                             "forced"};
+    Json content = Json::array();
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        const float raw      = aligned ? outcome.raw_logprobs[i] : std::nanf("");
+        const float sampling = aligned ? outcome.sampling_logprobs[i] : std::nanf("");
+        const std::uint8_t kind = aligned ? outcome.token_kinds[i] : 4;
+        content.push_back(Json{{"token", "token_id:" + std::to_string(ids[i])},
+                               {"logprob", finite_or_null(raw)},
+                               {"bytes", nullptr},
+                               {"top_logprobs", Json::array()},
+                               {"token_id", ids[i]},
+                               {"sampling_logprob", finite_or_null(sampling)},
+                               {"kind", kKinds[kind < 5 ? kind : 4]}});
+    }
+    return Json{{"content", std::move(content)},
+                {"logprob_mode", "raw"},
+                {"sampling_logprob_mode", "processed"},
+                {"recorded", aligned}};
+}
+
 std::string chunk(const OpenAIChatResponseIdentity& identity, Json delta, Json finish_reason,
                   bool include_usage, Json timings = nullptr, Json constraint = nullptr) {
     Json payload       = base_payload(identity, "chat.completion.chunk");
@@ -250,7 +287,7 @@ std::string make_chat_completion_response(const OpenAIChatResponseIdentity& iden
     Json payload       = base_payload(identity, "chat.completion");
     payload["choices"] = Json::array({Json{{"index", 0},
                                            {"message", std::move(message)},
-                                           {"logprobs", nullptr},
+                                           {"logprobs", sampled_logprobs_json(outcome)},
                                            {"finish_reason", Json(finish_reason(outcome))}}});
     payload["usage"]   = usage_json(usage_from(outcome));
     payload["timings"] = timings_json(outcome_timings(outcome));

@@ -394,6 +394,18 @@ public:
     std::optional<PinnedHostBuffer> round_host;
     std::optional<PinnedHostBuffer> score_logprobs_host;
     TokenId* host_tokens = nullptr;
+    // Rollout sampling logprobs for single-column samples (Begin and ordinary decode):
+    // [sampling[kMaximumConcurrency], raw[kMaximumConcurrency]] FP32 on device and pinned host.
+    std::optional<DeviceBuffer> sample_logprobs_device;
+    std::optional<PinnedHostBuffer> sample_logprobs_host;
+    // Per licensed token: runtime::SampledTokenKind, row-major like the speculative egress.
+    std::array<std::uint8_t, kMaximumConcurrency * std::max(qwen3_5::kDFlashDecodeMaximumWidth,
+                                                            qwen3_5::kMtpDecodeMaximumWidth)>
+        host_token_kinds{};
+    void enqueue_single_column_logprobs(const Tensor& logits, const Tensor& tokens,
+                                        const ops::SamplingConfig* configs, std::int32_t batch);
+    [[nodiscard]] std::span<const float> host_sampling_logprobs(std::size_t count) const;
+    [[nodiscard]] std::span<const float> host_raw_logprobs(std::size_t count) const;
     std::optional<PinnedHostBuffer> ordinary_host;
     qwen3_5::OrdinaryDecodeIngress* ordinary_host_ingress = nullptr;
     qwen3_5::OrdinaryDecodeEgress* ordinary_host_egress   = nullptr;

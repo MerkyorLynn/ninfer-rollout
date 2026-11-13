@@ -268,7 +268,12 @@ public:
           transaction_(std::exchange(other.transaction_, 0)), rows_(other.rows_),
           row_count_(std::exchange(other.row_count_, 0)), tokens_(other.tokens_),
           row_counts_(other.row_counts_), row_stride_(other.row_stride_), timing_(other.timing_),
-          constraint_failed_(other.constraint_failed_) {
+          constraint_failed_(other.constraint_failed_),
+          sampling_logprobs_(other.sampling_logprobs_), raw_logprobs_(other.raw_logprobs_),
+          token_kinds_(other.token_kinds_) {
+        other.sampling_logprobs_ = {};
+        other.raw_logprobs_      = {};
+        other.token_kinds_       = {};
         other.tokens_     = {};
         other.row_counts_ = {};
         other.row_stride_ = 0;
@@ -293,6 +298,15 @@ public:
 
     [[nodiscard]] runtime::ExecutionTiming execution_timing() const noexcept { return timing_; }
 
+    // Sampling-time logprobs aligned with tokens(); empty when the round did not record them.
+    [[nodiscard]] std::span<const float> sampling_logprobs() const noexcept {
+        return sampling_logprobs_;
+    }
+    [[nodiscard]] std::span<const float> raw_logprobs() const noexcept { return raw_logprobs_; }
+    [[nodiscard]] std::span<const std::uint8_t> token_kinds() const noexcept {
+        return token_kinds_;
+    }
+
 private:
     const void* owner_         = nullptr;
     std::uint64_t transaction_ = 0;
@@ -303,6 +317,9 @@ private:
     std::uint32_t row_stride_ = 0;
     runtime::ExecutionTiming timing_;
     std::array<bool, kMaximumConcurrency> constraint_failed_{};
+    std::span<const float> sampling_logprobs_;
+    std::span<const float> raw_logprobs_;
+    std::span<const std::uint8_t> token_kinds_;
 
     friend struct detail::ContractAccess;
 };
