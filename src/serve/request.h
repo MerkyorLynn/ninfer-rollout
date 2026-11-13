@@ -184,6 +184,8 @@ struct GenerationRequest {
     std::string chat_template_kwargs_json;
     ninfer::PromptContinuationMode continuation = ninfer::PromptContinuationMode::NewAssistantTurn;
     bool allow_engine_automatic_shared_prefixes = true;
+    // Rollout: echo exact prompt and committed completion ids (requires --rollout-score).
+    bool return_token_ids = false;
     SamplingParams sampling;
 
     [[nodiscard]] bool uses_tools() const noexcept {

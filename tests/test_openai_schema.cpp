@@ -831,6 +831,31 @@ int test_aggregate_response() {
     return failures;
 }
 
+int test_return_token_ids() {
+    int failures = 0;
+    failures += check(!parse(base_request()).generation.return_token_ids,
+                      "return_token_ids defaults to false");
+    Json body                = base_request();
+    body["return_token_ids"] = true;
+    failures += check(parse(body).generation.return_token_ids, "return_token_ids parses");
+    body["return_token_ids"] = "yes";
+    failures += check(api_error([&] { parse(body); }).param == "return_token_ids",
+                      "non-boolean return_token_ids is rejected");
+
+    GenerationOutcome outcome   = sample_outcome();
+    outcome.generated_token_ids = {11, 12, 248046};
+    Json response               = Json::parse(make_chat_completion_response(identity(), outcome));
+    failures +=
+        check(!response.contains("prompt_token_ids") && !response.contains("completion_token_ids"),
+              "token ids stay hidden unless requested");
+    outcome.prompt_token_ids = std::vector<ninfer::TokenId>{1, 2, 3};
+    response                 = Json::parse(make_chat_completion_response(identity(), outcome));
+    failures += check(response["prompt_token_ids"] == Json::array({1, 2, 3}) &&
+                          response["completion_token_ids"] == Json::array({11, 12, 248046}),
+                      "requested token ids echo prompt and committed completion ids");
+    return failures;
+}
+
 int test_stream_response() {
     int failures = 0;
     OpenAIChatStream stream(identity(), true);
@@ -982,6 +1007,7 @@ int main() {
     failures += test_reasoning_and_extensions();
     failures += test_stops_and_ranges();
     failures += test_aggregate_response();
+    failures += test_return_token_ids();
     failures += test_stream_response();
     failures += test_stream_observations();
     failures += test_common_objects();

@@ -9,6 +9,7 @@
 #include "runtime/engine/engine_core.h"
 #include "runtime/engine/model_instance.h"
 #include "runtime/engine/kv_capacity.h"
+#include "models/qwen3_5/frontend/prepared_prompt.h"
 #include "models/qwen3_5/program/program.h"
 
 #include <algorithm>
@@ -83,6 +84,11 @@ const PromptSummary& PreparedPrompt::summary() const noexcept {
 const PromptPreparationStats& PreparedPrompt::preparation_stats() const noexcept {
     static const PromptPreparationStats empty;
     return impl_ != nullptr ? impl_->prepare : empty;
+}
+
+std::vector<TokenId> PreparedPrompt::token_ids() const {
+    if (impl_ == nullptr) { throw std::invalid_argument("PreparedPrompt is empty"); }
+    return models::qwen3_5::PreparedPromptAccess::view(impl_->value).token_ids;
 }
 
 PreparedPrompt::operator bool() const noexcept { return impl_ != nullptr; }

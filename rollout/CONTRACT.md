@@ -25,6 +25,15 @@
 
 `prompt_tokens + completion_tokens` 超过 102400 时，这条记为删失，原文保留，不右截断。
 
+### 采样 token id
+
+服务带 `--rollout-score` 时，非流式请求可以加 `"return_token_ids": true`。响应顶层多两个字段：
+
+- `prompt_token_ids`：模型实际输入的 prompt id（聊天模板渲染后）。
+- `completion_token_ids`：按顺序提交的输出 id，含投机解码接受的 token 和最后的停止 token。长度等于 `usage.completion_tokens`。
+
+打分时直接用 `prompt_token_ids + completion_token_ids`，`logprob_start_len = len(prompt_token_ids)`，不要把文本重新分词。没开 `--rollout-score` 或 `stream=true` 时返回 400。思考预算（`thinking_budget`）注入的控制 token 也在 `completion_token_ids` 里；rollout 不应设置思考预算。
+
 ## 打分
 
 `POST /generate`

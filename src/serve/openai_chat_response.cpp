@@ -256,6 +256,11 @@ std::string make_chat_completion_response(const OpenAIChatResponseIdentity& iden
     payload["timings"] = timings_json(outcome_timings(outcome));
     if (outcome.constraint)
         payload["constraint"] = product::constraint_observation_json(outcome.constraint);
+    if (outcome.prompt_token_ids) {
+        // Committed ids in order: speculative accepts, the stop token, and any thinking control.
+        payload["prompt_token_ids"]     = *outcome.prompt_token_ids;
+        payload["completion_token_ids"] = outcome.generated_token_ids;
+    }
     return payload.dump();
 }
 

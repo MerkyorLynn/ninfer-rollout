@@ -802,8 +802,9 @@ void parse_stream_options(const Json& body, OpenAIChatRequest& output) {
 }
 
 void parse_response_observations(const Json& body, OpenAIChatRequest& output) {
-    output.timings_per_token = get_bool(body, "timings_per_token", false);
-    output.return_progress   = get_bool(body, "return_progress", false);
+    output.timings_per_token           = get_bool(body, "timings_per_token", false);
+    output.return_progress             = get_bool(body, "return_progress", false);
+    output.generation.return_token_ids = get_bool(body, "return_token_ids", false);
 }
 
 void parse_output_limit(const Json& body, const RequestLimits& limits, OpenAIChatRequest& output) {

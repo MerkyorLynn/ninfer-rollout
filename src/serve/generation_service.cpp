@@ -433,6 +433,7 @@ PreparedRequest GenerationService::prepare_impl(const GenerationRequest& request
         prepared.service_prepare_seconds = std::max(
             0.0, std::chrono::duration<double>(Clock::now() - prepared.lifetime->started).count() -
                      prepared.preparation.seconds);
+        if (request.return_token_ids) { prepared.prompt_token_ids = prompt.token_ids(); }
         if (observation.first_token) {
             observation.first_token = [callback = std::move(observation.first_token),
                                        seconds  = prepared.service_prepare_seconds](
@@ -514,6 +515,7 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
     outcome.prompt_tokens       = static_cast<int>(result.prompt.prompt_tokens);
     outcome.completion_tokens   = static_cast<int>(result.generated_token_ids.size());
     outcome.generated_token_ids = std::move(result.generated_token_ids);
+    outcome.prompt_token_ids    = std::move(prepared.prompt_token_ids);
     outcome.reasoning_tokens    = static_cast<int>(result.reasoning_tokens);
     outcome.thinking            = result.thinking;
     outcome.constraint          = result.constraint;

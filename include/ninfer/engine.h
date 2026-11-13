@@ -22,6 +22,8 @@ public:
 
     [[nodiscard]] const PromptSummary& summary() const noexcept;
     [[nodiscard]] const PromptPreparationStats& preparation_stats() const noexcept;
+    // Exact model input ids, including media placeholder ids. Copies; for rollout callers.
+    [[nodiscard]] std::vector<TokenId> token_ids() const;
     [[nodiscard]] explicit operator bool() const noexcept;
 
 private:

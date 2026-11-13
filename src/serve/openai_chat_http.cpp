@@ -29,6 +29,12 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
         limits.default_max_tokens = options_.default_max_tokens;
         request                   = parse_chat_completion_request(parse_json_body(req), limits);
         validate_openai_model(request.model, public_model_id_);
+        if (request.generation.return_token_ids && (!options_.rollout_score || request.stream)) {
+            ApiError error;
+            error.message = "return_token_ids requires --rollout-score and a non-streaming request";
+            error.param   = "return_token_ids";
+            throw ApiException(std::move(error));
+        }
     } catch (const ApiException& exception) {
         write_openai_error(res, exception.error());
         return;

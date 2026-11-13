@@ -53,6 +53,8 @@ struct GenerationOutcome {
     std::string text;
     std::string reasoning;
     std::vector<ninfer::TokenId> generated_token_ids;
+    // Filled only when the request set return_token_ids.
+    std::optional<std::vector<ninfer::TokenId>> prompt_token_ids;
     std::vector<ninfer::GeneratedToolCall> tool_calls;
     ninfer::ToolCallParseDiagnostics tool_call_parse;
     int prompt_tokens     = 0;
@@ -109,6 +111,7 @@ struct PreparedRequest {
     std::optional<std::uint32_t> thinking_budget;
     std::optional<ninfer::ReasoningEffort> reasoning_effort;
     std::optional<bool> preserve_thinking;
+    std::optional<std::vector<ninfer::TokenId>> prompt_token_ids;
     std::shared_ptr<RequestLifetime> lifetime;
 };
 
