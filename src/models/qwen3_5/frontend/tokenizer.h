@@ -162,6 +162,7 @@ private:
     std::vector<AddedToken> added_tokens_;
     std::array<std::vector<std::size_t>, 256> added_token_candidates_;
     std::vector<int> default_stop_token_ids_;
+    bool legacy_split_ = false;  // tokenizer.json uses the pre-\p{M} Qwen split pattern
 };
 
 } // namespace ninfer::models::qwen3_5::frontend
