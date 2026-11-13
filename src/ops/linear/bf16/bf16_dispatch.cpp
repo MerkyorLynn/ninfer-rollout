@@ -13,6 +13,13 @@ struct ShapeEntry {
 constexpr std::array kShapes{
     ShapeEntry{14336, 5120, select_bf16_n14336_k5120},
     ShapeEntry{5120, 6144, select_bf16_n5120_k6144},
+    // Dense Qwen3.8-27B BF16 text body. K=5120 schedules are N-generic, so the GDN q/k/v and z
+    // halves and the fused gate/up parent reuse the registered N14336 K5120 schedule table.
+    ShapeEntry{10240, 5120, select_bf16_n14336_k5120},
+    ShapeEntry{6144, 5120, select_bf16_n14336_k5120},
+    ShapeEntry{34816, 5120, select_bf16_n14336_k5120},
+    ShapeEntry{5120, 17408, select_bf16_n5120_k17408},
+    ShapeEntry{248320, 5120, select_bf16_n248320_k5120},
     ShapeEntry{48, 2560, select_bf16_n48_k2560},
     ShapeEntry{96, 2560, select_bf16_n96_k2560},
     ShapeEntry{1664, 2560, select_bf16_n1664_k2560},

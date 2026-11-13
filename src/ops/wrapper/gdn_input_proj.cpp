@@ -15,6 +15,7 @@
 #include "ops/linear/fp8/fp8_format.h"
 #include "ops/linear/nvfp4/nvfp4_layout.h"
 #include "ops/linear/nvfp4/nvfp4_format.h"
+#include "ninfer/ops/linear.h"
 
 #include <algorithm>
 #include <array>
@@ -277,6 +278,43 @@ void require_q8_rowsplit(const Weight& weight, std::int32_t rows, const char* la
     }
 }
 
+// Dense BF16 single parent [q;k;v;z] (16384 x 5120): no fused BF16 GDN kernel exists, so the
+// projection is two BF16 linears over row views of the parent (q/k/v -> qkv, z -> z).
+constexpr std::int32_t kBf16GdnHidden  = 5120;
+constexpr std::int32_t kBf16GdnQkvRows = 10240;
+constexpr std::int32_t kBf16GdnZRows   = 6144;
+
+bool is_bf16_gdn_parent(QType qtype, std::int32_t rows, std::int32_t input_rows) {
+    return qtype == QType::BF16 && rows == kBf16GdnQkvRows + kBf16GdnZRows &&
+           input_rows == kBf16GdnHidden;
+}
+
+Weight bf16_row_view(const Weight& w, std::int32_t first, std::int32_t rows) {
+    if (w.qtype != QType::BF16 || w.layout != QuantLayout::Contiguous || w.qdata == nullptr ||
+        first < 0 || rows <= 0 || first + rows > w.n) {
+        throw std::invalid_argument("bf16 gdn_input_proj: invalid BF16 contiguous parent");
+    }
+    Weight view = w;
+    const std::size_t offset =
+        static_cast<std::size_t>(first) * static_cast<std::size_t>(w.k) * sizeof(std::uint16_t);
+    view.qdata           = static_cast<const char*>(w.qdata) + offset;
+    view.payload         = view.qdata;
+    view.payload_bytes   = static_cast<std::uint64_t>(rows) * w.k * sizeof(std::uint16_t);
+    view.n               = rows;
+    view.shape[0]        = rows;
+    view.padded_shape[0] = rows;
+    return view;
+}
+
+void bf16_gdn_project(const Tensor& x, const Weight& w, Tensor& qkv, Tensor& z,
+                      cudaStream_t stream) {
+    if (!is_bf16_gdn_parent(w.qtype, w.n, w.k)) {
+        throw std::invalid_argument("bf16 gdn_input_proj: unsupported weight shape");
+    }
+    ninfer::ops::linear(x, bf16_row_view(w, 0, kBf16GdnQkvRows), qkv, stream);
+    ninfer::ops::linear(x, bf16_row_view(w, kBf16GdnQkvRows, kBf16GdnZRows), z, stream);
+}
+
 void validate_policy(LinearPolicy policy) {
     switch (policy) {
     case LinearPolicy::A16Only:
@@ -292,6 +330,15 @@ void dispatch_single_parent(const Tensor& x, const Weight& weight, Tensor& qkv, 
     validate_policy(policy);
     const std::int32_t cols = x.ne[1];
     if (cols <= 0) { throw std::invalid_argument("gdn_input_proj: T must be positive"); }
+
+    if (weight.qtype == QType::BF16) {
+        require_matrix(x, kBf16GdnHidden, cols, "x");
+        require_matrix(qkv, kBf16GdnQkvRows, cols, "qkv");
+        require_matrix(z, kBf16GdnZRows, cols, "z");
+        require_single_parent_nonoverlap(x, qkv, z);
+        bf16_gdn_project(x, weight, qkv, z, stream);
+        return;
+    }
 
     if (weight.qtype == QType::NVFP4) {
         constexpr std::int32_t kHidden  = 5120;
@@ -414,6 +461,31 @@ void dispatch_single_parent_snapshot(const Tensor& x, const Weight& weight,
                                      Tensor& value, Tensor& z, LinearPolicy policy,
                                      WorkspaceArena& workspace, cudaStream_t stream) {
     validate_policy(policy);
+
+    if (weight.qtype == QType::BF16) {
+        constexpr std::int32_t kQueryRows = 2048;
+        constexpr std::int32_t kKeyRows   = 2048;
+        constexpr std::int32_t kValueRows = 6144;
+        constexpr std::int32_t kChannels  = kQueryRows + kKeyRows + kValueRows;
+        const ConvGeometry geometry       = require_snapshot_input(x, kBf16GdnHidden);
+        require_snapshot_operands(conv_weight, conv_states, valid_columns, initial_state_slots,
+                                  snapshot_base_slots, kChannels, geometry);
+        require_conv_tensor(query, kQueryRows, geometry.width, geometry.batch,
+                            "gdn_input_proj_conv_snapshot", "query");
+        require_conv_tensor(key, kKeyRows, geometry.width, geometry.batch,
+                            "gdn_input_proj_conv_snapshot", "key");
+        require_conv_tensor(value, kValueRows, geometry.width, geometry.batch,
+                            "gdn_input_proj_conv_snapshot", "value");
+        require_conv_tensor(z, kBf16GdnZRows, geometry.width, geometry.batch,
+                            "gdn_input_proj_conv_snapshot", "z");
+        compose_batched_snapshot(x, conv_weight, conv_states, valid_columns, initial_state_slots,
+                                 snapshot_base_slots, query, key, value, z, kQueryRows, kKeyRows,
+                                 kValueRows, geometry, workspace, stream,
+                                 [&](const Tensor& x_flat, Tensor& projected, Tensor& z_flat) {
+                                     bf16_gdn_project(x_flat, weight, projected, z_flat, stream);
+                                 });
+        return;
+    }
 
     if (weight.qtype == QType::NVFP4) {
         constexpr std::int32_t kHidden     = 5120;
@@ -560,6 +632,34 @@ void dispatch_single_parent_record(const Tensor& x, const Weight& weight, const 
                                    LinearPolicy policy, WorkspaceArena& workspace,
                                    cudaStream_t stream) {
     validate_policy(policy);
+
+    if (weight.qtype == QType::BF16) {
+        constexpr std::int32_t kQueryRows = 2048;
+        constexpr std::int32_t kKeyRows   = 2048;
+        constexpr std::int32_t kValueRows = 6144;
+        constexpr std::int32_t kChannels  = kQueryRows + kKeyRows + kValueRows;
+        const ConvGeometry geometry       = require_record_input(x, kBf16GdnHidden);
+        require_record_operands(conv_weight, conv_states, valid_columns, initial_state_slots,
+                                kChannels, geometry);
+        require_conv_tensor(conv_record, kChannels, geometry.width, geometry.batch,
+                            "gdn_input_proj_conv_record", "conv record");
+        require_conv_tensor(query, kQueryRows, geometry.width, geometry.batch,
+                            "gdn_input_proj_conv_record", "query");
+        require_conv_tensor(key, kKeyRows, geometry.width, geometry.batch,
+                            "gdn_input_proj_conv_record", "key");
+        require_conv_tensor(value, kValueRows, geometry.width, geometry.batch,
+                            "gdn_input_proj_conv_record", "value");
+        require_conv_tensor(z, kBf16GdnZRows, geometry.width, geometry.batch,
+                            "gdn_input_proj_conv_record", "z");
+        require_record_nonoverlap(x, conv_weight, conv_states, valid_columns, initial_state_slots,
+                                  conv_record, query, key, value, z, workspace);
+        compose_record(x, conv_weight, conv_states, valid_columns, initial_state_slots, conv_record,
+                       query, key, value, z, geometry, workspace, stream,
+                       [&](const Tensor& x_flat, Tensor& record_flat, Tensor& z_flat) {
+                           bf16_gdn_project(x_flat, weight, record_flat, z_flat, stream);
+                       });
+        return;
+    }
 
     if (weight.qtype == QType::NVFP4) {
         constexpr std::int32_t kHidden     = 5120;
@@ -721,6 +821,16 @@ std::size_t gdn_input_proj_workspace_capacity_bytes(QType parent_qtype, std::int
     if (min_tokens <= 0 || max_tokens < min_tokens) {
         throw std::invalid_argument("gdn_input_proj workspace: invalid token interval");
     }
+    if (parent_qtype == QType::BF16) {
+        if (!is_bf16_gdn_parent(parent_qtype, parent_rows, input_rows)) {
+            throw std::invalid_argument("gdn_input_proj workspace: unsupported BF16 profile");
+        }
+        for (const std::int32_t rows : {kBf16GdnQkvRows, kBf16GdnZRows}) {
+            (void)linear_workspace_capacity_bytes(QType::BF16, rows, input_rows, policy,
+                                                  min_tokens, max_tokens);
+        }
+        return 0;
+    }
     if (parent_qtype == QType::NVFP4) {
         if (parent_rows != detail::Nvfp4N16384K5120::kOutputRows ||
             input_rows != detail::Nvfp4N16384K5120::kInputRows) {
@@ -802,6 +912,12 @@ std::size_t gdn_input_proj_conv_snapshot_workspace_capacity_bytes(
     std::int32_t batch_size, std::int32_t min_width, std::int32_t max_width) {
     validate_policy(policy);
     require_snapshot_capacity_domain(batch_size, min_width, max_width);
+    if (is_bf16_gdn_parent(parent_qtype, parent_rows, input_rows)) {
+        (void)gdn_input_proj_workspace_capacity_bytes(parent_qtype, parent_rows, input_rows, policy,
+                                                      batch_size * min_width,
+                                                      batch_size * max_width);
+        return composed_snapshot_capacity(kBf16GdnQkvRows, batch_size * max_width, 0);
+    }
     if (parent_qtype == QType::FP8_E4M3FN_ROW_BF16 &&
         parent_rows == detail::Fp8N16384K5120::kOutputRows &&
         input_rows == detail::Fp8N16384K5120::kInputRows) {
@@ -851,6 +967,12 @@ std::size_t gdn_input_proj_conv_record_workspace_capacity_bytes(
     std::int32_t batch_size, std::int32_t min_width, std::int32_t max_width) {
     validate_policy(policy);
     require_record_capacity_domain(batch_size, min_width, max_width);
+    if (is_bf16_gdn_parent(parent_qtype, parent_rows, input_rows)) {
+        (void)gdn_input_proj_workspace_capacity_bytes(parent_qtype, parent_rows, input_rows, policy,
+                                                      batch_size * min_width,
+                                                      batch_size * max_width);
+        return 0;
+    }
     if (parent_qtype == QType::FP8_E4M3FN_ROW_BF16 &&
         parent_rows == detail::Fp8N16384K5120::kOutputRows &&
         input_rows == detail::Fp8N16384K5120::kInputRows) {
