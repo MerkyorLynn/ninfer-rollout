@@ -4,7 +4,7 @@
 
 ![NInfer BF16 and FP8 sampling logprob fidelity](assets/pro6000_kl_fidelity.png)
 
-ninfer-rollout 是基于 NInfer 的 RL rollout 引擎，on-policy 采样时直接返回 token id 与采样 logprob。
+ninfer-rollout 是基于 NInfer 的 RL rollout 引擎：输出走 HTTP，直接提供 OpenAI 兼容接口，on-policy 采样时直接返回 token id 与采样 logprob。
 
 - **效率第一**：单卡 RTX PRO 6000，FP8 吞吐 837 tok/s，比 SGLang 快 19%、比 vLLM 快 36%；BF16 分别快 16% / 34%。
 - **精度第一**：BF16 采样 logprob 对 BF16 参考的 KL 仅 0.000148，约为 SGLang 的 1/7、vLLM 的 1/8；FP8 为 0.001721，同样三家最低，可直接用于训练。
