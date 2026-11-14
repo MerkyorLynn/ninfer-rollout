@@ -22,7 +22,7 @@ std::size_t ffn_workspace_bytes(const FfnParameters& parameters, std::int32_t fi
     const auto& gu   = p.gate_up.weight;
     const auto& down = p.down.weight;
     WorkspaceLayoutBuilder layout;
-    if (mtp || gu.qtype == QType::BF16) {
+    if (mtp || gu.qtype == QType::BF16 || down.qtype == QType::BF16) {
         (void)layout.alloc(DType::BF16, {gu.n, last});
         {
             auto scope = layout.scope();
@@ -66,8 +66,8 @@ void ffn(const Tensor& hidden, const FfnParameters& parameters, Tensor& residual
     const auto& p    = std::get<DenseParameters>(parameters);
     const auto& gu   = p.gate_up.weight;
     const auto& down = p.down.weight;
-    // Dense BF16 has no fused SwiGLU/linear_add kernel: compose from BF16 linear.
-    if (mtp || gu.qtype == QType::BF16) {
+    // Compose BF16 operands when the fused dense route does not support their shape.
+    if (mtp || gu.qtype == QType::BF16 || down.qtype == QType::BF16) {
         Tensor gate_up = workspace.alloc(DType::BF16, {gu.n, columns});
         {
             auto call = workspace.scope();
