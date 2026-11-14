@@ -18,4 +18,9 @@ void sampled_token_logprobs_launch(const Tensor& logits, const Tensor& tokens,
                                    Tensor& sampling_logprobs, Tensor& raw_logprobs,
                                    cudaStream_t stream);
 
+void sampled_token_raw_logprobs_launch(const Tensor& logits, const Tensor& tokens,
+                                       const std::int32_t* counts, std::int32_t width,
+                                       std::int32_t token_domain, std::int32_t columns,
+                                       Tensor& raw_logprobs, cudaStream_t stream);
+
 } // namespace ninfer::ops::detail

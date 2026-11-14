@@ -117,11 +117,9 @@ __device__ __forceinline__ void speculative_sparse_warp_store(const int* drafts,
     }
 }
 
-__device__ __forceinline__ void speculative_sparse_warp_greedy(const int* target_tokens,
-                                                               const int* drafts, int* lengths,
-                                                               int* anchors, int* licensed_tokens,
-                                                               int* licensed_counts, int* accepted,
-                                                               int row, int extent, int k) {
+__device__ __forceinline__ void speculative_sparse_warp_greedy(
+    const int* target_tokens, const int* drafts, int* lengths, int* anchors, int* licensed_tokens,
+    int* licensed_counts, int* accepted, float* sampling_logprobs, int row, int extent, int k) {
     const int lane = threadIdx.x & 31;
     const bool reject =
         lane < extent && target_tokens[row * (k + 1) + lane] != drafts[row * k + lane];
@@ -130,31 +128,36 @@ __device__ __forceinline__ void speculative_sparse_warp_greedy(const int* target
     const int terminal  = target_tokens[row * (k + 1) + a];
     speculative_sparse_warp_store(drafts, k, row, a, terminal, lengths, anchors, licensed_tokens,
                                   licensed_counts, accepted);
+    if (sampling_logprobs != nullptr && lane <= k) {
+        sampling_logprobs[row * (k + 1) + lane] = lane <= a ? 0.0f : CUDART_NAN_F;
+    }
 }
 
 __global__ __launch_bounds__(256) void speculative_accept_sparse_warp_greedy_kernel(
     const int* target_tokens, const int* drafts, const int* current_extents, int* lengths,
-    int* anchors, int* licensed_tokens, int* licensed_counts, int* accepted, int k) {
+    int* anchors, int* licensed_tokens, int* licensed_counts, int* accepted,
+    float* sampling_logprobs, int k) {
     const int row    = threadIdx.x / 32;
     const int extent = min(k, max(0, current_extents[row]));
     speculative_sparse_warp_greedy(target_tokens, drafts, lengths, anchors, licensed_tokens,
-                                   licensed_counts, accepted, row, extent, k);
+                                   licensed_counts, accepted, sampling_logprobs, row, extent, k);
 }
 
 __device__ __forceinline__ void speculative_sparse_warp_accept(
     SamplingWorkspace workspace, const int* drafts, const int* candidate_ids,
     const float* proposal_q, const SamplingConfig& cfg, int k, int row, int extent, bool greedy,
-    int* lengths, int* anchors, int* licensed_tokens, int* licensed_counts, int* accepted) {
+    int* lengths, int* anchors, int* licensed_tokens, int* licensed_counts, int* accepted,
+    float* sampling_logprobs) {
     const int lane       = threadIdx.x & 31;
     const int old_length = lengths[row];
     bool reject          = false;
+    float pd             = 0.0f;
     if (lane < extent) {
         const int d = drafts[row * k + lane];
         if (greedy)
             reject = workspace.dist_idx[sampling_dist_offset(lane, 0)] != d;
         else {
             const int support = workspace.dist_support[lane];
-            float pd          = 0.0f;
             for (int j = 0; j < support; ++j) {
                 const int at = sampling_dist_offset(lane, j);
                 if (workspace.dist_idx[at] == d) {
@@ -172,16 +175,19 @@ __device__ __forceinline__ void speculative_sparse_warp_accept(
     const unsigned failures = __ballot_sync(0xffffffffU, reject);
     const int a             = failures ? __ffs(failures) - 1 : extent;
     int terminal;
+    float terminal_probability = 0.0f;
     if (greedy)
         terminal = workspace.dist_idx[sampling_dist_offset(a, 0)];
     else {
         const int n  = workspace.dist_support[a];
         int token    = 0;
         float weight = 0.0f;
+        float target_probability = 0.0f;
         if (lane < n) {
             const int at = sampling_dist_offset(a, lane);
             token        = workspace.dist_idx[at];
             weight       = workspace.dist_prob[at];
+            target_probability = weight;
             if (a < extent) {
                 const int q_at = (row * k + a) * kSparseSpeculativeCandidates;
                 weight         = fmaxf(weight - speculative_sparse_probability(candidate_ids + q_at,
@@ -208,9 +214,17 @@ __device__ __forceinline__ void speculative_sparse_warp_accept(
                              : positive     ? 31 - __clz(positive)
                                             : 0;
         terminal           = __shfl_sync(0xffffffffU, token, selected);
+        terminal_probability = __shfl_sync(0xffffffffU, target_probability, selected);
     }
     speculative_sparse_warp_store(drafts, k, row, a, terminal, lengths, anchors, licensed_tokens,
                                   licensed_counts, accepted);
+    if (sampling_logprobs != nullptr && lane <= k) {
+        float value = CUDART_NAN_F;
+        if (lane <= a) {
+            value = greedy ? 0.0f : logf(lane < a ? pd : terminal_probability);
+        }
+        sampling_logprobs[row * (k + 1) + lane] = value;
+    }
 }
 
 // Commits the round's accepted tokens plus one correction/bonus token, then
@@ -465,9 +479,10 @@ __launch_bounds__(kSamplerGroupBlock) __global__ void speculative_sampling_group
     const std::int32_t* target_tokens, const std::int32_t* drafts,
     const std::int32_t* candidate_ids, const float* proposal_q, const std::int32_t* current_extents,
     std::int32_t* lengths, std::int32_t* anchors, std::int32_t* licensed_tokens,
-    std::int32_t* licensed_counts, std::int32_t* accepted, const SamplingConfig* configs,
-    std::int32_t token_domain, std::int32_t cols, std::int32_t partial_blocks,
-    std::int32_t group_count, SamplingWorkspace workspace, std::size_t workspace_row_stride) {
+    std::int32_t* licensed_counts, std::int32_t* accepted, float* sampling_logprobs,
+    const SamplingConfig* configs, std::int32_t token_domain, std::int32_t cols,
+    std::int32_t partial_blocks, std::int32_t group_count, SamplingWorkspace workspace,
+    std::size_t workspace_row_stride) {
     const int row   = static_cast<int>(blockIdx.z);
     const int group = static_cast<int>(blockIdx.x);
     const int col   = static_cast<int>(blockIdx.y);
@@ -488,8 +503,8 @@ __launch_bounds__(kSamplerGroupBlock) __global__ void speculative_sampling_group
         if constexpr (SparseProposal) {
             if (tid < 32 && col == 0 && group == 0)
                 speculative_sparse_warp_greedy(target_tokens, drafts, lengths, anchors,
-                                               licensed_tokens, licensed_counts, accepted, row,
-                                               extent, k);
+                                               licensed_tokens, licensed_counts, accepted,
+                                               sampling_logprobs, row, extent, k);
         } else {
 
             if (tid == 0 && col == 0 && group == 0) {
@@ -586,7 +601,7 @@ __launch_bounds__(kSamplerGroupBlock) __global__ void speculative_sampling_group
             if (last_column && tid < 32)
                 speculative_sparse_warp_accept(workspace, drafts, candidate_ids, proposal_q, cfg, k,
                                                row, extent, true, lengths, anchors, licensed_tokens,
-                                               licensed_counts, accepted);
+                                               licensed_counts, accepted, sampling_logprobs);
             if (last_column && tid == 0) *workspace.speculative_finalize_count = 0;
             return;
         }
@@ -606,7 +621,7 @@ __launch_bounds__(kSamplerGroupBlock) __global__ void speculative_sampling_group
         if (last_column && tid < 32)
             speculative_sparse_warp_accept(workspace, drafts, candidate_ids, proposal_q, cfg, k,
                                            row, extent, false, lengths, anchors, licensed_tokens,
-                                           licensed_counts, accepted);
+                                           licensed_counts, accepted, sampling_logprobs);
         if (last_column && tid == 0) *workspace.speculative_finalize_count = 0;
         return;
     } else {

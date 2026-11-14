@@ -32,6 +32,7 @@ void target_accept(ExecutionCore& execution, Tensor& continuation_hidden_store,
             frame.target_tokens, frame.target_logits, frame.drafts, frame.candidate_ids,
             frame.proposal_q, frame.current_extents, frame.frontiers, frame.anchors,
             frame.licensed_tokens, frame.licensed_counts, frame.accepted_drafts,
+            frame.sampling_logprobs.data != nullptr ? &frame.sampling_logprobs : nullptr,
             dimension(execution.parameters.model.resources().public_token_count), frame.sampling,
             {false}, execution.work, execution.device.stream);
     } else {
@@ -43,13 +44,21 @@ void target_accept(ExecutionCore& execution, Tensor& continuation_hidden_store,
             execution.work, execution.device.stream);
     }
     if (frame.sampling_logprobs.data != nullptr && frame.raw_logprobs.data != nullptr) {
-        // Rollout logprobs of every licensed token (accepted drafts, correction or bonus) under
-        // the target distribution of its verify column. Same stream, before the egress copy.
-        ops::sampled_token_logprobs(
-            frame.target_logits, frame.licensed_tokens, &frame.licensed_counts, frame.sampling,
-            &frame.drafts, frame.licensed_tokens.ne[0],
-            dimension(execution.parameters.model.resources().public_token_count),
-            frame.sampling_logprobs, frame.raw_logprobs, execution.device.stream);
+        // Sparse acceptance has already recorded the processed distribution; only raw logsumexp
+        // remains. Other backends still derive both values from the licensed target columns.
+        if (frame.proposal_q.data != nullptr) {
+            ops::sampled_token_raw_logprobs(
+                frame.target_logits, frame.licensed_tokens, &frame.licensed_counts,
+                frame.licensed_tokens.ne[0],
+                dimension(execution.parameters.model.resources().public_token_count),
+                frame.raw_logprobs, execution.device.stream);
+        } else {
+            ops::sampled_token_logprobs(
+                frame.target_logits, frame.licensed_tokens, &frame.licensed_counts, frame.sampling,
+                &frame.drafts, frame.licensed_tokens.ne[0],
+                dimension(execution.parameters.model.resources().public_token_count),
+                frame.sampling_logprobs, frame.raw_logprobs, execution.device.stream);
+        }
     }
     ops::speculative_select_accepted_hidden(frame.target_hidden, frame.accepted_drafts,
                                             frame.selected_hidden, execution.device.stream);

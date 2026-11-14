@@ -94,8 +94,8 @@ void speculative_accept_greedy_drafts_launch(const Tensor& target_tokens, const 
             static_cast<std::int32_t*>(lengths.data), static_cast<std::int32_t*>(anchors.data),
             static_cast<std::int32_t*>(licensed_tokens.data),
             static_cast<std::int32_t*>(licensed_counts.data),
-            static_cast<std::int32_t*>(accepted.data), configs, token_domain, cols, partial_blocks,
-            groups, scratch, layout.bytes);
+            static_cast<std::int32_t*>(accepted.data), nullptr, configs, token_domain, cols,
+            partial_blocks, groups, scratch, layout.bytes);
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -103,17 +103,20 @@ void speculative_accept_sparse_drafts_launch(
     const Tensor& target_tokens, const Tensor& logits, const Tensor& drafts,
     const Tensor& candidate_ids, const Tensor& proposal_q, const Tensor& current_extents,
     Tensor& round_lengths, Tensor& round_anchors, Tensor& licensed_tokens, Tensor& licensed_counts,
-    Tensor& accepted_drafts, std::int32_t token_domain, const SamplingConfig* configs,
-    bool raw_greedy, DeviceSpan workspace, cudaStream_t stream) {
+    Tensor& accepted_drafts, Tensor* sampling_logprobs, std::int32_t token_domain,
+    const SamplingConfig* configs, bool raw_greedy, DeviceSpan workspace, cudaStream_t stream) {
     const std::int32_t batch = drafts.ne[1];
     const std::int32_t k     = drafts.ne[0];
     const std::int32_t cols  = k + 1;
+    float* sampling_output =
+        sampling_logprobs == nullptr ? nullptr : static_cast<float*>(sampling_logprobs->data);
     if (raw_greedy) {
         speculative_accept_sparse_warp_greedy_kernel<<<1, 32 * batch, 0, stream>>>(
             static_cast<const int*>(target_tokens.data), static_cast<const int*>(drafts.data),
             static_cast<const int*>(current_extents.data), static_cast<int*>(round_lengths.data),
             static_cast<int*>(round_anchors.data), static_cast<int*>(licensed_tokens.data),
-            static_cast<int*>(licensed_counts.data), static_cast<int*>(accepted_drafts.data), k);
+            static_cast<int*>(licensed_counts.data), static_cast<int*>(accepted_drafts.data),
+            sampling_output, k);
         CUDA_CHECK(cudaGetLastError());
         return;
     }
@@ -144,8 +147,8 @@ void speculative_accept_sparse_drafts_launch(
         static_cast<std::int32_t*>(round_anchors.data),
         static_cast<std::int32_t*>(licensed_tokens.data),
         static_cast<std::int32_t*>(licensed_counts.data),
-        static_cast<std::int32_t*>(accepted_drafts.data), configs, token_domain, cols,
-        partial_blocks, groups, scratch, layout.bytes);
+        static_cast<std::int32_t*>(accepted_drafts.data), sampling_output, configs, token_domain,
+        cols, partial_blocks, groups, scratch, layout.bytes);
 
     CUDA_CHECK(cudaGetLastError());
 }

@@ -2,8 +2,8 @@
 
 // Implements: include/ninfer/ops/sampled_logprobs.h
 // Algorithm: one kSamplerBlock CTA per column. Raw logprob is a two-pass logsumexp over the
-// vocabulary; the sampling logprob rebuilds the truncated support with the same device helpers the
-// speculative accept / sample kernels use and looks the emitted token up in it.
+// vocabulary. When configs is non-null, the sampling logprob rebuilds the truncated support with
+// the same device helpers as speculative acceptance; a null configs pointer selects raw-only work.
 
 #include "ops/kernel/sampling_device.cuh"
 
@@ -41,8 +41,8 @@ __launch_bounds__(kSamplerBlock) __global__ void sampled_token_logprobs_kernel(
     const int col    = column - row * width;
     if (counts != nullptr && col >= counts[row]) {
         if (tid == 0) {
-            sampling_out[column] = CUDART_NAN_F;
-            raw_out[column]      = CUDART_NAN_F;
+            if (sampling_out != nullptr) { sampling_out[column] = CUDART_NAN_F; }
+            raw_out[column] = CUDART_NAN_F;
         }
         return;
     }
@@ -56,8 +56,7 @@ __launch_bounds__(kSamplerBlock) __global__ void sampled_token_logprobs_kernel(
     __shared__ int merge_idx[kSamplerBlock * kSamplerFastCandidates];
     __shared__ int n_support;
 
-    const SamplingConfig cfg = configs[row];
-    const int token          = tokens[column];
+    const int token = tokens[column];
     const std::int64_t base  = static_cast<std::int64_t>(column) * physical_rows;
     const bool token_ok      = token >= 0 && token < token_domain;
 
@@ -76,6 +75,8 @@ __launch_bounds__(kSamplerBlock) __global__ void sampled_token_logprobs_kernel(
             token_ok ? __bfloat162float(logits[base + token]) - maximum - logf(sum) : CUDART_NAN_F;
     }
 
+    if (configs == nullptr) { return; }
+    const SamplingConfig cfg = configs[row];
     if (!(cfg.temperature > 0.0f)) {
         if (tid == 0) { sampling_out[column] = token_ok ? 0.0f : CUDART_NAN_F; }
         return;
