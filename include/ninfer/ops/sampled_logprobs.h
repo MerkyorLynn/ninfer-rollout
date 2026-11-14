@@ -44,11 +44,15 @@ void sampled_token_logprobs(const Tensor& logits, const Tensor& tokens, const Te
  * Op: raw log-probabilities of emitted tokens when the processed values already exist.
  *
  * Uses the same full-vocabulary temperature-1 formula and request-major [width,B] layout as
- * sampled_token_logprobs. counts limits each row to its licensed prefix and invalid outputs are
- * NaN. This entry does not read sampling configs or reconstruct a truncated distribution.
+ * sampled_token_logprobs. maxima is I32 [width,B] containing each column's argmax over the same
+ * current logits and token domain, with no intervening mutation; the caller guarantees every index
+ * is in [0,token_domain). Its represented logit supplies the exact LSE maximum without a separate
+ * scan. counts limits each row to its licensed prefix and invalid outputs are NaN. This entry does
+ * not read sampling configs or reconstruct a truncated distribution.
  */
-void sampled_token_raw_logprobs(const Tensor& logits, const Tensor& tokens, const Tensor* counts,
-                                std::int32_t width, std::int32_t token_domain,
-                                Tensor& raw_logprobs, cudaStream_t stream);
+void sampled_token_raw_logprobs(const Tensor& logits, const Tensor& tokens,
+                                const Tensor& maxima, const Tensor* counts, std::int32_t width,
+                                std::int32_t token_domain, Tensor& raw_logprobs,
+                                cudaStream_t stream);
 
 } // namespace ninfer::ops

@@ -1,3 +1,5 @@
+#include "ninfer/ops/argmax.h"
+#include "ninfer/ops/sampled_logprobs.h"
 #include "ninfer/ops/target_logprobs.h"
 #include "ops/op_tester.h"
 
@@ -136,19 +138,30 @@ int run_case(const std::string& label, std::int32_t physical_rows, std::int32_t 
 
     GuardedDeviceBuffer device_logits(logits.size() * sizeof(std::uint16_t));
     GuardedDeviceBuffer device_targets(targets.size() * sizeof(std::int32_t));
+    GuardedDeviceBuffer device_maxima(targets.size() * sizeof(std::int32_t));
     GuardedDeviceBuffer device_output(targets.size() * sizeof(float));
+    GuardedDeviceBuffer device_raw(targets.size() * sizeof(float));
     device_logits.copy_from_host(logits.data(), device_logits.bytes());
     device_targets.copy_from_host(targets.data(), device_targets.bytes());
     device_output.fill(0xcd);
+    device_raw.fill(0xcd);
 
     Tensor logits_tensor(device_logits.data(), DType::BF16, {physical_rows, columns});
     Tensor targets_tensor(device_targets.data(), DType::I32, {columns});
+    Tensor maxima_tensor(device_maxima.data(), DType::I32, {columns});
     Tensor output_tensor(device_output.data(), DType::FP32, {columns});
+    Tensor raw_tensor(device_raw.data(), DType::FP32, {columns});
     ops::target_logprobs(logits_tensor, targets_tensor, valid_rows, output_tensor, nullptr);
+    ops::argmax(logits_tensor, maxima_tensor, valid_rows, nullptr);
+    ops::sampled_token_raw_logprobs(logits_tensor, targets_tensor, maxima_tensor, nullptr, columns,
+                                    valid_rows, raw_tensor, nullptr);
     cuda_synchronize();
 
     int failures = verify_reduction(label, fp32_as_double(device_output.data(), targets.size()),
                                     expected, kTargetLogprobsFp32Criterion);
+    failures += verify_reduction((label + " raw-only").c_str(),
+                                 fp32_as_double(device_raw.data(), targets.size()), expected,
+                                 kTargetLogprobsFp32Criterion);
     failures +=
         verify_exact((label + " preserves logits").c_str(),
                      from_device<std::uint16_t>(device_logits.data(), logits.size()), logits);
@@ -157,7 +170,9 @@ int run_case(const std::string& label, std::int32_t physical_rows, std::int32_t 
                      from_device<std::int32_t>(device_targets.data(), targets.size()), targets);
     failures += device_logits.verify_guards(label + " logits guards");
     failures += device_targets.verify_guards(label + " target guards");
+    failures += device_maxima.verify_guards(label + " maxima guards");
     failures += device_output.verify_guards(label + " output guards");
+    failures += device_raw.verify_guards(label + " raw guards");
     return failures;
 }
 

@@ -65,9 +65,13 @@ void sampled_token_logprobs(const Tensor& logits, const Tensor& tokens, const Te
                                           sampling_logprobs, raw_logprobs, stream);
 }
 
-void sampled_token_raw_logprobs(const Tensor& logits, const Tensor& tokens, const Tensor* counts,
-                                std::int32_t width, std::int32_t token_domain,
-                                Tensor& raw_logprobs, cudaStream_t stream) {
+void sampled_token_raw_logprobs(const Tensor& logits, const Tensor& tokens,
+                                const Tensor& maxima, const Tensor* counts, std::int32_t width,
+                                std::int32_t token_domain, Tensor& raw_logprobs,
+                                cudaStream_t stream) {
+    const auto fail = [](const std::string& message) -> void {
+        throw std::invalid_argument("sampled_token_raw_logprobs: " + message);
+    };
     if (logits.dtype != DType::BF16 || !logits.is_contiguous() || logits.data == nullptr) {
         fail("logits must be contiguous non-null BF16");
     }
@@ -83,6 +87,10 @@ void sampled_token_raw_logprobs(const Tensor& logits, const Tensor& tokens, cons
         fail("logits columns and tokens must both equal width*B");
     }
     const std::int64_t batch = columns / width;
+    if (maxima.dtype != DType::I32 || !maxima.is_contiguous() || maxima.data == nullptr ||
+        maxima.numel() != columns) {
+        fail("maxima must be contiguous non-null I32 with width*B elements");
+    }
     if (raw_logprobs.dtype != DType::FP32 || !raw_logprobs.is_contiguous() ||
         raw_logprobs.data == nullptr || raw_logprobs.numel() != columns) {
         fail("raw output must be contiguous non-null FP32 with width*B elements");
@@ -94,9 +102,9 @@ void sampled_token_raw_logprobs(const Tensor& logits, const Tensor& tokens, cons
         }
         count_ptr = static_cast<const std::int32_t*>(counts->data);
     }
-    detail::sampled_token_raw_logprobs_launch(logits, tokens, count_ptr, width, token_domain,
-                                              static_cast<std::int32_t>(columns), raw_logprobs,
-                                              stream);
+    detail::sampled_token_raw_logprobs_launch(logits, tokens, maxima, count_ptr, width,
+                                              token_domain, static_cast<std::int32_t>(columns),
+                                              raw_logprobs, stream);
 }
 
 } // namespace ninfer::ops

@@ -1,9 +1,9 @@
 #pragma once
 
 // Implements: include/ninfer/ops/sampled_logprobs.h
-// Algorithm: one kSamplerBlock CTA per column. Raw logprob is a two-pass logsumexp over the
-// vocabulary. When configs is non-null, the sampling logprob rebuilds the truncated support with
-// the same device helpers as speculative acceptance; a null configs pointer selects raw-only work.
+// Algorithm: one kSamplerBlock CTA per column. The combined kernel uses a two-pass logsumexp and
+// rebuilds truncated support. The dedicated raw-only kernel reuses the target argmax's maximum
+// and performs only the sum-exp pass, preserving the existing sum reduction order.
 
 #include "ops/kernel/sampling_device.cuh"
 
@@ -41,8 +41,8 @@ __launch_bounds__(kSamplerBlock) __global__ void sampled_token_logprobs_kernel(
     const int col    = column - row * width;
     if (counts != nullptr && col >= counts[row]) {
         if (tid == 0) {
-            if (sampling_out != nullptr) { sampling_out[column] = CUDART_NAN_F; }
-            raw_out[column] = CUDART_NAN_F;
+            sampling_out[column] = CUDART_NAN_F;
+            raw_out[column]      = CUDART_NAN_F;
         }
         return;
     }
@@ -56,7 +56,8 @@ __launch_bounds__(kSamplerBlock) __global__ void sampled_token_logprobs_kernel(
     __shared__ int merge_idx[kSamplerBlock * kSamplerFastCandidates];
     __shared__ int n_support;
 
-    const int token = tokens[column];
+    const SamplingConfig cfg = configs[row];
+    const int token          = tokens[column];
     const std::int64_t base  = static_cast<std::int64_t>(column) * physical_rows;
     const bool token_ok      = token >= 0 && token < token_domain;
 
@@ -75,8 +76,6 @@ __launch_bounds__(kSamplerBlock) __global__ void sampled_token_logprobs_kernel(
             token_ok ? __bfloat162float(logits[base + token]) - maximum - logf(sum) : CUDART_NAN_F;
     }
 
-    if (configs == nullptr) { return; }
-    const SamplingConfig cfg = configs[row];
     if (!(cfg.temperature > 0.0f)) {
         if (tid == 0) { sampling_out[column] = token_ok ? 0.0f : CUDART_NAN_F; }
         return;
@@ -103,6 +102,36 @@ __launch_bounds__(kSamplerBlock) __global__ void sampled_token_logprobs_kernel(
             }
         }
         sampling_out[column] = token_ok ? lp : CUDART_NAN_F;
+    }
+}
+
+__launch_bounds__(kSamplerBlock) __global__ void sampled_token_raw_logprobs_kernel(
+    const __nv_bfloat16* logits, const std::int32_t* tokens, const std::int32_t* maxima,
+    const std::int32_t* counts, std::int32_t width, std::int32_t token_domain,
+    std::int32_t physical_rows, float* raw_out) {
+    const int tid    = threadIdx.x;
+    const int column = static_cast<int>(blockIdx.x);
+    const int row    = column / width;
+    const int col    = column - row * width;
+    if (counts != nullptr && col >= counts[row]) {
+        if (tid == 0) { raw_out[column] = CUDART_NAN_F; }
+        return;
+    }
+
+    __shared__ float red[kSamplerBlock];
+    const int token         = tokens[column];
+    const std::int64_t base = static_cast<std::int64_t>(column) * physical_rows;
+    const bool token_ok     = token >= 0 && token < token_domain;
+
+    const float maximum = __bfloat162float(logits[base + maxima[column]]);
+    float local_sum     = 0.0f;
+    for (int v = tid; v < token_domain; v += blockDim.x) {
+        local_sum += expf(__bfloat162float(logits[base + v]) - maximum);
+    }
+    const float sum = sampled_logprobs_block_reduce(local_sum, red, false);
+    if (tid == 0) {
+        raw_out[column] =
+            token_ok ? __bfloat162float(logits[base + token]) - maximum - logf(sum) : CUDART_NAN_F;
     }
 }
 

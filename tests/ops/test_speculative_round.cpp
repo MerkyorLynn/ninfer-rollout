@@ -1,5 +1,6 @@
 #include "ninfer/ops/speculative_round.h"
 #include "ninfer/ops/sampled_logprobs.h"
+#include "ninfer/ops/argmax.h"
 #include "ops/op_tester.h"
 #include "core/decode_graph.h"
 #include "core/device.h"
@@ -438,6 +439,7 @@ struct SparseAcceptSuite {
         GuardedDeviceBuffer d_reference_sampling(logprob_bytes);
         GuardedDeviceBuffer d_reference_raw(logprob_bytes);
         GuardedDeviceBuffer d_raw_only(logprob_bytes);
+        GuardedDeviceBuffer d_maxima(kSparseColumns * kSparseBatch * sizeof(std::int32_t));
         initialize(d_lengths, initial_lengths);
         initialize(d_anchors, initial_anchors);
         d_licensed.fill(0xcd);
@@ -468,13 +470,20 @@ struct SparseAcceptSuite {
         Tensor reference_raw_tensor(d_reference_raw.data(), DType::FP32,
                                     {kSparseColumns, kSparseBatch});
         Tensor raw_only_tensor(d_raw_only.data(), DType::FP32, {kSparseColumns, kSparseBatch});
+        Tensor maxima_tensor(d_maxima.data(), DType::I32, {kSparseColumns, kSparseBatch});
         const std::size_t workspace_bytes =
             ops::speculative_accept_sparse_drafts_workspace_capacity_bytes(
                 kSparseTokenDomain, envelope, kSparseDrafts, kSparseDrafts, kSparseBatch,
                 kSparseBatch);
         GuardedDeviceBuffer scratch(std::max<std::size_t>(workspace_bytes, 1));
         WorkspaceArena workspace(DeviceSpan{scratch.data(), scratch.bytes()});
-        const auto launch = [&](cudaStream_t stream) {
+        const auto forward = [&](cudaStream_t stream) {
+            Tensor flat_logits = logits_tensor.view(
+                {kSparsePhysicalRows, kSparseColumns * kSparseBatch});
+            Tensor flat_maxima = maxima_tensor.view({kSparseColumns * kSparseBatch});
+            ops::argmax(flat_logits, flat_maxima, kSparseTokenDomain, stream);
+        };
+        const auto finish = [&](cudaStream_t stream) {
             const auto* config_ptr = static_cast<const ops::SamplingConfig*>(d_configs.p);
             ops::speculative_accept_sparse_drafts(
                 target_tensor, logits_tensor, drafts_tensor, candidate_tensor, q_tensor,
@@ -485,9 +494,13 @@ struct SparseAcceptSuite {
                                         config_ptr, &drafts_tensor, kSparseColumns,
                                         kSparseTokenDomain, reference_sampling_tensor,
                                         reference_raw_tensor, stream);
-            ops::sampled_token_raw_logprobs(logits_tensor, licensed_tensor, &licensed_counts_tensor,
-                                            kSparseColumns, kSparseTokenDomain, raw_only_tensor,
-                                            stream);
+            ops::sampled_token_raw_logprobs(logits_tensor, licensed_tensor, maxima_tensor,
+                                            &licensed_counts_tensor, kSparseColumns,
+                                            kSparseTokenDomain, raw_only_tensor, stream);
+        };
+        const auto launch = [&](cudaStream_t stream) {
+            forward(stream);
+            finish(stream);
         };
         launch(nullptr);
         cuda_synchronize();
@@ -548,10 +561,12 @@ struct SparseAcceptSuite {
             cuda_check(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking),
                        "sparse graph stream");
             {
-                DecodeGraphDefinition definition;
-                DecodeGraphExecutable executable;
-                definition.capture(stream, [&] { launch(stream); });
-                executable.instantiate(definition);
+                DecodeGraphDefinition forward_definition, finish_definition;
+                DecodeGraphExecutable forward_executable, finish_executable;
+                forward_definition.capture(stream, [&] { forward(stream); });
+                finish_definition.capture(stream, [&] { finish(stream); });
+                forward_executable.instantiate(forward_definition);
+                finish_executable.instantiate(finish_definition);
                 for (int pass = 0; pass < 3; ++pass) {
                     auto next_extents = extents;
                     auto next_lengths = initial_lengths;
@@ -599,7 +614,8 @@ struct SparseAcceptSuite {
                     d_extents.copy_from_host(next_extents.data(),
                                              next_extents.size() * sizeof(int));
                     cuda_synchronize();
-                    executable.launch(stream);
+                    forward_executable.launch(stream);
+                    finish_executable.launch(stream);
                     cuda_synchronize(stream);
                     const auto wanted = sparse_accept_oracle(current_logits, drafts, candidate_ids,
                                                              current_q, next_extents, next_lengths,
@@ -652,6 +668,7 @@ struct SparseAcceptSuite {
         failures += d_reference_sampling.verify_guards((label + " reference-sampling guards").c_str());
         failures += d_reference_raw.verify_guards((label + " reference-raw guards").c_str());
         failures += d_raw_only.verify_guards((label + " raw-only guards").c_str());
+        failures += d_maxima.verify_guards((label + " maxima guards").c_str());
         return failures;
     }
 
