@@ -1066,6 +1066,17 @@ the conservative general envelope even for greedy inputs. `--reject-at J` change
 exercise rejection; `--extent 0` checks the bonus-only case. These DFlash2 measurements do not
 measure Engine inference.
 
+The sampled-logprob benchmark measures the full-vocabulary raw path when processed logprobs are
+already available, or the original combined path with `--reference`. `--extent` is the licensed
+prefix length per request (at most K+1); unused columns are written as NaN. Argmax setup and cache
+flushes are outside the measured Graph.
+
+```bash
+cmake --build build --parallel --target ninfer_sampled_logprobs_bench
+./build/bench/ninfer_sampled_logprobs_bench --batch 8 --drafts 7 --extent 6
+./build/bench/ninfer_sampled_logprobs_bench --batch 8 --drafts 7 --extent 6 --reference
+```
+
 ```bash
 ./build/bench/ninfer_sampling_select_bench --matrix
 ./build/bench/ninfer_sampling_select_bench --sample --batch 8 --mode stochastic --top-k 20

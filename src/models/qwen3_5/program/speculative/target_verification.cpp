@@ -48,8 +48,8 @@ void target_accept(ExecutionCore& execution, Tensor& continuation_hidden_store,
         // remains. Other backends still derive both values from the licensed target columns.
         if (frame.proposal_q.data != nullptr) {
             ops::sampled_token_raw_logprobs(
-                frame.target_logits, frame.licensed_tokens, &frame.licensed_counts,
-                frame.licensed_tokens.ne[0],
+                frame.target_logits, frame.licensed_tokens, frame.target_tokens,
+                &frame.licensed_counts, frame.licensed_tokens.ne[0],
                 dimension(execution.parameters.model.resources().public_token_count),
                 frame.raw_logprobs, execution.device.stream);
         } else {

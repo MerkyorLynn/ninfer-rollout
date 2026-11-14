@@ -23,14 +23,16 @@ void sampled_token_logprobs_launch(const Tensor& logits, const Tensor& tokens,
 }
 
 void sampled_token_raw_logprobs_launch(const Tensor& logits, const Tensor& tokens,
-                                       const std::int32_t* counts, std::int32_t width,
-                                       std::int32_t token_domain, std::int32_t columns,
-                                       Tensor& raw_logprobs, cudaStream_t stream) {
-    sampled_token_logprobs_kernel<<<static_cast<unsigned int>(columns), kSamplerBlock, 0,
-                                    stream>>>(
+                                       const Tensor& maxima, const std::int32_t* counts,
+                                       std::int32_t width, std::int32_t token_domain,
+                                       std::int32_t columns, Tensor& raw_logprobs,
+                                       cudaStream_t stream) {
+    sampled_token_raw_logprobs_kernel<<<static_cast<unsigned int>(columns), kSamplerBlock, 0,
+                                        stream>>>(
         static_cast<const __nv_bfloat16*>(logits.data),
-        static_cast<const std::int32_t*>(tokens.data), counts, nullptr, nullptr, width,
-        token_domain, logits.ne[0], nullptr, static_cast<float*>(raw_logprobs.data));
+        static_cast<const std::int32_t*>(tokens.data),
+        static_cast<const std::int32_t*>(maxima.data), counts, width, token_domain, logits.ne[0],
+        static_cast<float*>(raw_logprobs.data));
     CUDA_CHECK(cudaGetLastError());
 }
 
