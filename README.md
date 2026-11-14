@@ -4,11 +4,13 @@
 
 ![NInfer BF16 and FP8 sampling logprob fidelity](assets/pro6000_kl_fidelity.png)
 
-> On-policy rollout sampling and teacher-forced scoring on NInfer.
+ninfer-rollout 是基于 NInfer 的 RL rollout 引擎，on-policy 采样时直接返回 token id 与采样 logprob。
 
-本仓库在 [NInfer](https://github.com/Neroued/ninfer) 上补齐 RL 训练所需的前向采集能力：按约定做 on-policy 采样，返回模型实际使用的 token id，再用 teacher-forced 打分得到 trainer 要的 `old_logprobs`。打分端点 `POST /generate` 与 SGLang 兼容，可直接对接 RLVR / RLOO 一类训练流程。
+- **效率第一**：单卡 RTX PRO 6000，FP8 吞吐 837 tok/s，比 SGLang 快 19%、比 vLLM 快 36%；BF16 分别快 16% / 34%。
+- **精度第一**：BF16 采样 logprob 对 BF16 参考的 KL 仅 0.000148，约为 SGLang 的 1/7、vLLM 的 1/8；FP8 为 0.001721，同样三家最低，可直接用于训练。
+- **同时兼容 on-policy 与 off-policy**：on-policy 直接用采样时 logprob；off-policy 可走 teacher-forced 打分（POST /generate，与 SGLang 兼容）补算 logprob。
 
-推理内核（含 DFlash2 投机解码、FP8 等）沿用上游，未改采样分布。通用引擎文档见上游仓库。
+推理内核（DFlash2 投机解码、FP8）沿用上游，未改采样分布。
 
 ## 上游基础
 
