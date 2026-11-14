@@ -1,5 +1,9 @@
 # NInfer Rollout — 基于 NInfer 的 RL rollout 前向采样/打分框架
 
+![NInfer FP8 and BF16 throughput on RTX PRO 6000](assets/pro6000_throughput.png)
+
+![NInfer BF16 and FP8 sampling logprob fidelity](assets/pro6000_kl_fidelity.png)
+
 > On-policy rollout sampling and teacher-forced scoring on NInfer.
 
 本仓库在 [NInfer](https://github.com/Neroued/ninfer) 上补齐 RL 训练所需的前向采集能力：按约定做 on-policy 采样，返回模型实际使用的 token id，再用 teacher-forced 打分得到 trainer 要的 `old_logprobs`。打分端点 `POST /generate` 与 SGLang 兼容，可直接对接 RLVR / RLOO 一类训练流程。
