@@ -146,6 +146,11 @@ void speculative_accept_greedy_drafts(const Tensor& target_tokens, const Tensor&
  *   committed only after the caller chooses a final prefix of the licensed output. All other
  *   inputs remain unchanged.
  *
+ *   When sampling_logprobs is non-null, it is FP32 [K+1,B]. For each emitted token it receives
+ *   log p_cfg(token) from the normalized target distribution already constructed for acceptance;
+ *   greedy rows report zero. Physical entries beyond each row's licensed prefix are NaN. Correction
+ *   tokens use their marginal target probability, not their residual-distribution probability.
+ *
  * Execution:
  *   all_rows_greedy_without_penalties=true promises the matching device configs and enables the
  *   raw target_tokens route. A false flag selects the general route and supports mixed rows.
@@ -158,8 +163,9 @@ void speculative_accept_sparse_drafts(
     const Tensor& target_tokens, const Tensor& logits, const Tensor& drafts,
     const Tensor& candidate_ids, const Tensor& proposal_q, const Tensor& current_extents,
     Tensor& round_lengths, Tensor& round_anchors, Tensor& licensed_tokens, Tensor& licensed_counts,
-    Tensor& accepted_drafts, std::int32_t token_domain, const SamplingConfig* configs,
-    SpeculativeAcceptExecutionEnvelope envelope, WorkspaceArena& workspace, cudaStream_t stream);
+    Tensor& accepted_drafts, Tensor* sampling_logprobs, std::int32_t token_domain,
+    const SamplingConfig* configs, SpeculativeAcceptExecutionEnvelope envelope,
+    WorkspaceArena& workspace, cudaStream_t stream);
 
 /**
  * Op: speculative_select_accepted_hidden

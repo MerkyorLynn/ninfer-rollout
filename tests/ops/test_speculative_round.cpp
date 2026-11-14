@@ -1,4 +1,5 @@
 #include "ninfer/ops/speculative_round.h"
+#include "ninfer/ops/sampled_logprobs.h"
 #include "ops/op_tester.h"
 #include "core/decode_graph.h"
 #include "core/device.h"
@@ -296,6 +297,7 @@ struct SparseAcceptSuite {
         std::vector<std::int32_t> accepted;
         std::vector<std::int32_t> lengths;
         std::vector<std::int32_t> anchors;
+        std::vector<float> sampling_logprobs;
     };
 
     SparseExpected sparse_accept_oracle(const std::vector<std::uint16_t>& logits,
@@ -312,11 +314,21 @@ struct SparseAcceptSuite {
             .accepted        = std::vector<std::int32_t>(kSparseBatch),
             .lengths         = initial_lengths,
             .anchors         = std::vector<std::int32_t>(kSparseBatch),
+            .sampling_logprobs = std::vector<float>(kSparseColumns * kSparseBatch,
+                                                    std::numeric_limits<float>::quiet_NaN()),
         };
         for (int row = 0; row < kSparseBatch; ++row) {
             const int extent = std::clamp(extents[static_cast<std::size_t>(row)], 0, kSparseDrafts);
             int accepted_count = 0;
             int terminal_token = 0;
+            const auto record_logprob = [&](int column, int token,
+                                            const TargetDistribution& target) {
+                const std::size_t at = static_cast<std::size_t>(row) * kSparseColumns + column;
+                expected.sampling_logprobs[at] =
+                    configs[static_cast<std::size_t>(row)].temperature > 0.0f
+                        ? static_cast<float>(std::log(distribution_probability(target, token)))
+                        : 0.0f;
+            };
             for (int column = 0; column <= extent; ++column) {
                 const TargetDistribution target = sparse_target_distribution(
                     logits, row, column, configs[static_cast<std::size_t>(row)], token_counts,
@@ -327,16 +339,19 @@ struct SparseAcceptSuite {
                                        initial_lengths[static_cast<std::size_t>(row)] + extent + 1,
                                        ops::kSamplePurposeSpeculativeBonus);
                     terminal_token = sample_target_distribution(target, uniform);
+                    record_logprob(column, terminal_token, target);
                     break;
                 }
 
                 const int draft = drafts[static_cast<std::size_t>(row) * kSparseDrafts + column];
                 if (!(configs[static_cast<std::size_t>(row)].temperature > 0.0f)) {
                     if (target.ids.front() == draft) {
+                        record_logprob(column, draft, target);
                         ++accepted_count;
                         continue;
                     }
                     terminal_token = target.ids.front();
+                    record_logprob(column, terminal_token, target);
                     break;
                 }
 
@@ -348,6 +363,7 @@ struct SparseAcceptSuite {
                                    initial_lengths[static_cast<std::size_t>(row)] + column + 1,
                                    ops::kSamplePurposeSpeculativeAccept);
                 if (p >= q || uniform * q < p) {
+                    record_logprob(column, draft, target);
                     ++accepted_count;
                     continue;
                 }
@@ -357,6 +373,7 @@ struct SparseAcceptSuite {
                                    ops::kSamplePurposeSpeculativeCorrection);
                 terminal_token = sample_sparse_residual(target, candidate_ids, proposal_q, row,
                                                         column, correction_uniform);
+                record_logprob(column, terminal_token, target);
                 break;
             }
 
@@ -416,11 +433,20 @@ struct SparseAcceptSuite {
         GuardedDeviceBuffer d_licensed(kSparseColumns * kSparseBatch * sizeof(std::int32_t));
         GuardedDeviceBuffer d_licensed_counts(kSparseBatch * sizeof(std::int32_t));
         GuardedDeviceBuffer d_accepted(kSparseBatch * sizeof(std::int32_t));
+        const std::size_t logprob_bytes = kSparseColumns * kSparseBatch * sizeof(float);
+        GuardedDeviceBuffer d_sampling(logprob_bytes);
+        GuardedDeviceBuffer d_reference_sampling(logprob_bytes);
+        GuardedDeviceBuffer d_reference_raw(logprob_bytes);
+        GuardedDeviceBuffer d_raw_only(logprob_bytes);
         initialize(d_lengths, initial_lengths);
         initialize(d_anchors, initial_anchors);
         d_licensed.fill(0xcd);
         d_licensed_counts.fill(0xef);
         d_accepted.fill(0xab);
+        d_sampling.fill(0xcd);
+        d_reference_sampling.fill(0xcd);
+        d_reference_raw.fill(0xcd);
+        d_raw_only.fill(0xcd);
 
         Tensor target_tensor(d_target_tokens.p, DType::I32, {kSparseColumns, kSparseBatch});
         Tensor logits_tensor(d_logits.p, DType::BF16,
@@ -436,6 +462,12 @@ struct SparseAcceptSuite {
         Tensor licensed_tensor(d_licensed.data(), DType::I32, {kSparseColumns, kSparseBatch});
         Tensor licensed_counts_tensor(d_licensed_counts.data(), DType::I32, {kSparseBatch});
         Tensor accepted_tensor(d_accepted.data(), DType::I32, {kSparseBatch});
+        Tensor sampling_tensor(d_sampling.data(), DType::FP32, {kSparseColumns, kSparseBatch});
+        Tensor reference_sampling_tensor(d_reference_sampling.data(), DType::FP32,
+                                         {kSparseColumns, kSparseBatch});
+        Tensor reference_raw_tensor(d_reference_raw.data(), DType::FP32,
+                                    {kSparseColumns, kSparseBatch});
+        Tensor raw_only_tensor(d_raw_only.data(), DType::FP32, {kSparseColumns, kSparseBatch});
         const std::size_t workspace_bytes =
             ops::speculative_accept_sparse_drafts_workspace_capacity_bytes(
                 kSparseTokenDomain, envelope, kSparseDrafts, kSparseDrafts, kSparseBatch,
@@ -443,11 +475,19 @@ struct SparseAcceptSuite {
         GuardedDeviceBuffer scratch(std::max<std::size_t>(workspace_bytes, 1));
         WorkspaceArena workspace(DeviceSpan{scratch.data(), scratch.bytes()});
         const auto launch = [&](cudaStream_t stream) {
+            const auto* config_ptr = static_cast<const ops::SamplingConfig*>(d_configs.p);
             ops::speculative_accept_sparse_drafts(
                 target_tensor, logits_tensor, drafts_tensor, candidate_tensor, q_tensor,
                 extent_tensor, lengths_tensor, anchors_tensor, licensed_tensor,
-                licensed_counts_tensor, accepted_tensor, kSparseTokenDomain,
-                static_cast<const ops::SamplingConfig*>(d_configs.p), envelope, workspace, stream);
+                licensed_counts_tensor, accepted_tensor, &sampling_tensor, kSparseTokenDomain,
+                config_ptr, envelope, workspace, stream);
+            ops::sampled_token_logprobs(logits_tensor, licensed_tensor, &licensed_counts_tensor,
+                                        config_ptr, &drafts_tensor, kSparseColumns,
+                                        kSparseTokenDomain, reference_sampling_tensor,
+                                        reference_raw_tensor, stream);
+            ops::sampled_token_raw_logprobs(logits_tensor, licensed_tensor, &licensed_counts_tensor,
+                                            kSparseColumns, kSparseTokenDomain, raw_only_tensor,
+                                            stream);
         };
         launch(nullptr);
         cuda_synchronize();
@@ -465,6 +505,38 @@ struct SparseAcceptSuite {
                                    read<std::int32_t>(d_lengths, kSparseBatch), wanted.lengths);
             checks += verify_exact((label + phase + " provisional anchors").c_str(),
                                    read<std::int32_t>(d_anchors, kSparseBatch), wanted.anchors);
+            const auto sampling = read<float>(d_sampling, wanted.sampling_logprobs.size());
+            const auto reference_sampling =
+                read<float>(d_reference_sampling, wanted.sampling_logprobs.size());
+            const auto raw_only = read<float>(d_raw_only, wanted.sampling_logprobs.size());
+            const auto reference_raw = read<float>(d_reference_raw, wanted.sampling_logprobs.size());
+            std::vector<float> valid_sampling, valid_reference_sampling, valid_raw, valid_reference_raw;
+            std::vector<double> oracle_sampling;
+            for (int row = 0; row < kSparseBatch; ++row) {
+                for (int column = 0; column < kSparseColumns; ++column) {
+                    const std::size_t at = static_cast<std::size_t>(row) * kSparseColumns + column;
+                    if (column >= wanted.licensed_counts[static_cast<std::size_t>(row)]) {
+                        if (!std::isnan(sampling[at]) || !std::isnan(reference_sampling[at]) ||
+                            !std::isnan(raw_only[at]) || !std::isnan(reference_raw[at])) {
+                            ++checks;
+                        }
+                        continue;
+                    }
+                    valid_sampling.push_back(sampling[at]);
+                    valid_reference_sampling.push_back(reference_sampling[at]);
+                    oracle_sampling.push_back(wanted.sampling_logprobs[at]);
+                    valid_raw.push_back(raw_only[at]);
+                    valid_reference_raw.push_back(reference_raw[at]);
+                }
+            }
+            checks += verify_exact((label + phase + " processed logprob reuse").c_str(),
+                                   valid_sampling, valid_reference_sampling);
+            checks += verify_exact((label + phase + " raw-only logprobs").c_str(), valid_raw,
+                                   valid_reference_raw);
+            std::vector<double> sampling_double(valid_sampling.begin(), valid_sampling.end());
+            checks += verify_pointwise((label + phase + " processed logprob oracle").c_str(),
+                                       sampling_double, oracle_sampling,
+                                       PointwiseCriterion{.absolute = 1.0e-6, .relative = 1.0e-6});
             return checks;
         };
         int failures = check_result(expected, " eager");
@@ -576,6 +648,10 @@ struct SparseAcceptSuite {
         failures += d_licensed.verify_guards((label + " licensed guards").c_str());
         failures += d_licensed_counts.verify_guards((label + " licensed-count guards").c_str());
         failures += d_accepted.verify_guards((label + " accepted guards").c_str());
+        failures += d_sampling.verify_guards((label + " sampling-logprob guards").c_str());
+        failures += d_reference_sampling.verify_guards((label + " reference-sampling guards").c_str());
+        failures += d_reference_raw.verify_guards((label + " reference-raw guards").c_str());
+        failures += d_raw_only.verify_guards((label + " raw-only guards").c_str());
         return failures;
     }
 

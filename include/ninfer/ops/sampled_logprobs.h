@@ -40,4 +40,15 @@ void sampled_token_logprobs(const Tensor& logits, const Tensor& tokens, const Te
                             std::int32_t width, std::int32_t token_domain,
                             Tensor& sampling_logprobs, Tensor& raw_logprobs, cudaStream_t stream);
 
+/**
+ * Op: raw log-probabilities of emitted tokens when the processed values already exist.
+ *
+ * Uses the same full-vocabulary temperature-1 formula and request-major [width,B] layout as
+ * sampled_token_logprobs. counts limits each row to its licensed prefix and invalid outputs are
+ * NaN. This entry does not read sampling configs or reconstruct a truncated distribution.
+ */
+void sampled_token_raw_logprobs(const Tensor& logits, const Tensor& tokens, const Tensor* counts,
+                                std::int32_t width, std::int32_t token_domain,
+                                Tensor& raw_logprobs, cudaStream_t stream);
+
 } // namespace ninfer::ops

@@ -181,8 +181,9 @@ void speculative_accept_sparse_drafts(
     const Tensor& target_tokens, const Tensor& logits, const Tensor& drafts,
     const Tensor& candidate_ids, const Tensor& proposal_q, const Tensor& current_extents,
     Tensor& round_lengths, Tensor& round_anchors, Tensor& licensed_tokens, Tensor& licensed_counts,
-    Tensor& accepted_drafts, std::int32_t token_domain, const SamplingConfig* configs,
-    SpeculativeAcceptExecutionEnvelope envelope, WorkspaceArena& workspace, cudaStream_t stream) {
+    Tensor& accepted_drafts, Tensor* sampling_logprobs, std::int32_t token_domain,
+    const SamplingConfig* configs, SpeculativeAcceptExecutionEnvelope envelope,
+    WorkspaceArena& workspace, cudaStream_t stream) {
     constexpr const char* op = "speculative_accept_sparse_drafts";
     if (token_domain != kSparseTokenDomain) {
         throw std::invalid_argument(
@@ -207,6 +208,9 @@ void speculative_accept_sparse_drafts(
     require_matrix(licensed_tokens, DType::I32, columns, batch, op, "licensed_tokens");
     require_vector(licensed_counts, DType::I32, batch, op, "licensed_counts");
     require_vector(accepted_drafts, DType::I32, batch, op, "accepted_drafts");
+    if (sampling_logprobs != nullptr) {
+        require_matrix(*sampling_logprobs, DType::FP32, columns, batch, op, "sampling_logprobs");
+    }
     if (configs == nullptr) {
         throw std::invalid_argument("speculative_accept_sparse_drafts: configs must be non-null");
     }
@@ -217,8 +221,8 @@ void speculative_accept_sparse_drafts(
     const DeviceSpan scratch = bytes == 0 ? DeviceSpan{} : workspace.alloc_bytes(bytes);
     detail::speculative_accept_sparse_drafts_launch(
         target_tokens, logits, drafts, candidate_ids, proposal_q, current_extents, round_lengths,
-        round_anchors, licensed_tokens, licensed_counts, accepted_drafts, token_domain, configs,
-        envelope.all_rows_greedy_without_penalties, scratch, stream);
+        round_anchors, licensed_tokens, licensed_counts, accepted_drafts, sampling_logprobs,
+        token_domain, configs, envelope.all_rows_greedy_without_penalties, scratch, stream);
 }
 
 void speculative_select_accepted_hidden(const Tensor& hidden, const Tensor& selectors, Tensor& out,

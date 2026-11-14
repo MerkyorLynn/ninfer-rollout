@@ -396,7 +396,8 @@ void run_dflash2(DeviceBuffer& logits, DeviceBuffer& counts, const Options& opti
     const auto launch      = [&](cudaStream_t stream) {
         ops::speculative_accept_sparse_drafts(
             ttargets, tlogits, tdrafts, tcandidates, tq, textents, tlengths, tanchors, tlicensed,
-            tlicensed_counts, taccepted, kTokenDomain, config_ptr, envelope, workspace, stream);
+            tlicensed_counts, taccepted, nullptr, kTokenDomain, config_ptr, envelope, workspace,
+            stream);
     };
 
     cudaStream_t stream = nullptr;
