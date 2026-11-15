@@ -77,3 +77,15 @@ python3 rollout/probe.py --base http://127.0.0.1:19421 --model ninfer-rollout --
 | KL（k3 逐 token 均值，相对 SGLang BF16 teacher-forced 参考） | 0.001721 |
 | 概率比落在 0.8–1.25 之外的 token | 1.66% |
 | max\|Δ\| | 8.59 |
+
+### 与 SGLang、vLLM 的同口径对比
+
+同一份 Coder390 权重、同一个官方 BF16 DFlash2 草稿、C8、80 条请求，三家都返回采样时 logprob。完整数据、口径和局限见 [RTX PRO 6000 rollout 实测报告](docs/performance/rtx-pro-6000-rollout.md)。
+
+![三家引擎吞吐对比](assets/pro6000/01-throughput.png)
+
+![采样 logprob 保真度](assets/pro6000/02-logprob-fidelity.png)
+
+![OPT1 存 logprob 吞吐提升](assets/pro6000/03-opt1-uplift.png)
+
+![down_proj 混合精度的保真度收益与代价](assets/pro6000/04-down-proj-precision.png)
