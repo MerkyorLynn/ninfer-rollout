@@ -11,7 +11,7 @@ cmake -S . -B build-sm120a -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES
 cmake --build build-sm120a -j --target ninfer-serve
 ```
 
-Load a `.ninfer` pack:
+Load an FP8 `.ninfer` pack with DFlash2 draft length 7. This is the measured configuration. Produce the pack with the existing `qwen3_8_27b_nvfp4` recipe; see [Weight conversion](docs/weight-conversion.md).
 
 ```bash
 ./build-sm120a/apps/ninfer-serve MODEL.ninfer \
@@ -19,6 +19,8 @@ Load a `.ninfer` pack:
   --rollout-score --rollout-score-context 8192 \
   --host 127.0.0.1 --port 19421 --model-id ninfer-rollout
 ```
+
+On one RTX PRO 6000 Blackwell 96GB, at C8, 100K context, `max_tokens` 94,208, 80 samples, and logprobs enabled: 917.3 tok/s, busy wall 2,153 s, 68 correct / 9 wrong / 3 truncated, acceptance length 4.676. Against an SGLang BF16 teacher-forced reference, k3 per-token mean KL is 0.001721, 1.66% of tokens have a probability ratio outside 0.8–1.25, and max|Δ| is 8.59.
 
 Acceptance:
 
