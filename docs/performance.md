@@ -26,6 +26,10 @@ The Qwen3.6-27B NVFP4 MTP3 phase table comes from a corpus C=1 point whose full 
 not published here. Qwen3.8 measurements use FP8 E4M3 row-256 KV; the Qwen3.6 measurements
 use INT8 group-64 KV. Each model page records its build and run conditions.
 
+## RL rollout on RTX PRO 6000 (ninfer-rollout)
+
+[RTX PRO 6000 rollout 实测](performance/rtx-pro-6000-rollout.md)：单卡 RTX PRO 6000 Blackwell 96GB，C8，返回采样时 logprob，NInfer 与 SGLang、vLLM 的吞吐和 logprob 保真度同口径对比。
+
 ## Reading the results
 
 | Question | Metric to use |
