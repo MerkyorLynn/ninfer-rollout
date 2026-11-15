@@ -1,13 +1,11 @@
 # NInfer Rollout — 基于 NInfer 的 RL rollout 前向采样/打分框架
 
-![NInfer FP8 and BF16 throughput on RTX PRO 6000](assets/pro6000_throughput.png)
-
-![NInfer BF16 and FP8 sampling logprob fidelity](assets/pro6000_kl_fidelity.png)
-
 ninfer-rollout 是基于 NInfer 的 RL rollout 引擎：输出走 HTTP，直接提供 OpenAI 兼容接口，on-policy 采样时直接返回 token id 与采样 logprob。
 
-- **效率第一**：单卡 RTX PRO 6000，FP8 吞吐 837 tok/s，比 SGLang 快 19%、比 vLLM 快 36%；BF16 分别快 16% / 34%。
-- **精度第一**：BF16 采样 logprob 对 BF16 参考的 KL 仅 0.000148，约为 SGLang 的 1/7、vLLM 的 1/8；FP8 为 0.001721，同样三家最低，可直接用于训练。
+采用的配置是 FP8 `.ninfer` 包，DFlash2 草稿 K=7（`--spec dflash2 --draft-tokens 7`）。
+
+- **效率**：单卡 RTX PRO 6000 Blackwell 96GB，并发 C8，上下文 100K，`max_tokens` 94,208，80 条样本，请求打开 logprobs：917.3 tok/s，busy 墙钟 2,153 s，接受长度 4.676。80 条里 68 条正确、9 条错误、3 条截断。
+- **精度**：相对 SGLang BF16 teacher-forced 参考，k3 逐 token 平均 KL 0.001721；1.66% 的 token 概率比落在 0.8–1.25 之外，max|Δ| 8.59。
 - **同时兼容 on-policy 与 off-policy**：on-policy 直接用采样时 logprob；off-policy 可走 teacher-forced 打分（POST /generate，与 SGLang 兼容）补算 logprob。
 
 推理内核（DFlash2 投机解码、FP8）沿用上游，未改采样分布。
@@ -34,7 +32,7 @@ cmake -S . -B build-sm120a -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES
 cmake --build build-sm120a -j --target ninfer-serve
 ```
 
-启动（开启打分端点，DFlash2 投机解码）：
+启动（FP8 包，DFlash2 草稿 K=7，开启打分端点）。上面的结果就是这条命令测得的：
 
 ```bash
 ./build-sm120a/apps/ninfer-serve MODEL.ninfer \
@@ -42,6 +40,8 @@ cmake --build build-sm120a -j --target ninfer-serve
   --rollout-score --rollout-score-context 8192 \
   --host 127.0.0.1 --port 19421 --model-id ninfer-rollout
 ```
+
+`MODEL.ninfer` 用现有官方配方 `qwen3_8_27b_nvfp4` 从本地 checkpoint 转出，见 [Weight conversion](docs/weight-conversion.md)。
 
 验收：
 
@@ -66,4 +66,14 @@ python3 rollout/probe.py --base http://127.0.0.1:19421 --model ninfer-rollout --
 
 ## 结果
 
-对照评测在 RTX PRO 6000D 上测试，结果稍后补充。标准版 RTX PRO 6000 预计会快约 20%。
+配置：FP8 `.ninfer` 包，DFlash2 草稿 K=7。单卡 RTX PRO 6000 Blackwell 96GB，并发 C8，上下文 100K，`max_tokens` 94,208，80 条样本，请求打开 logprobs。
+
+| 项 | 结果 |
+|---|---|
+| 吞吐 | 917.3 tok/s |
+| busy 墙钟 | 2,153 s |
+| 正确 / 错误 / 截断 | 68 / 9 / 3 |
+| 接受长度 | 4.676 |
+| KL（k3 逐 token 均值，相对 SGLang BF16 teacher-forced 参考） | 0.001721 |
+| 概率比落在 0.8–1.25 之外的 token | 1.66% |
+| max\|Δ\| | 8.59 |

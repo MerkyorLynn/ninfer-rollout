@@ -62,7 +62,8 @@ These names select conversion choices. Runtime execution is selected from the ar
 configuration and actual bindings stored in the artifact. `--name` sets the public model name;
 it does not select kernels.
 
-For a Qwen3.8-27B NVFP4/FP8 artifact with DFlash2:
+The measured rollout configuration uses this Qwen3.8-27B NVFP4/FP8 artifact with DFlash2,
+launched with `--spec dflash2 --draft-tokens 7`. The result is in the repository README:
 
 ```bash
 python3 -m tools.convert \
